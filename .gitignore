@@ -1,0 +1,8 @@
+# Ignore all folders
+*/
+
+# Keep all files
+!*.py
+!*.ipynb
+!*.txt
+!*.md
