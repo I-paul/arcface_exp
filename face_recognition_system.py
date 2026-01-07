@@ -25,14 +25,35 @@ RECOGNITION_THRESHOLD = 0.65
 LOCK_FRAMES = 25
 OCCLUSION_LANDMARK_RATIO = 0.6
 
+# Video Optimization
+VIDEO_SCALE = 0.75  # Scale down frames for processing efficiency
+TARGET_FPS = 30
+FRAME_SKIP = 2  # Process every Nth frame (1 = process all). Increase to 2+ for higher display FPS
+
 from PIL import Image, ImageTk
 import tkinter as tk
 from tkinter import ttk
 
 root = tk.Tk()
 root.title("Attendance System")
-panel = tk.Label(root)
-panel.pack()
+
+# Ensure a minimum window size and center the window on screen
+min_w, min_h = 800, 800
+root.minsize(min_w, min_h)
+
+# Determine a starting geometry that is at least min size
+screen_w = root.winfo_screenwidth()
+screen_h = root.winfo_screenheight()
+start_w = max(1280, min_w)
+start_h = max(720, min_h)
+start_x = int((screen_w - start_w) / 2)
+start_y = int((screen_h - start_h) / 2)
+root.geometry(f"{start_w}x{start_h}+{start_x}+{start_y}")
+root.resizable(True, True)
+
+# Video panel (centered and expandable)
+panel = tk.Label(root, bg="black")
+panel.pack(fill=tk.BOTH, expand=True, anchor=tk.CENTER)
 def ask_person_name():
     """
     Modal Tkinter dialog to ask for person name.
@@ -90,7 +111,7 @@ class FaceSystem:
     def __init__(self):
         self.app = FaceAnalysis(
             name="buffalo_l",
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers=["OpenVINOExecutionProvider", "CPUExecutionProvider"]
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
 
@@ -128,6 +149,7 @@ class FaceSystem:
     
     @staticmethod
     def normalize(v):
+
         return v / np.linalg.norm(v)
 
     def save(self):
@@ -146,6 +168,19 @@ class FaceSystem:
     # ======================
     # ENROLLMENT
     # ======================
+    def enroll(self, name, embeddings):
+        if len(embeddings) < ENROLL_IMAGES:
+            raise ValueError("Not enough valid face samples")
+
+        centroid = self.normalize(np.mean(embeddings, axis=0))
+        self.index.add(centroid.reshape(1, -1))
+
+        self.meta[str(self.index.ntotal - 1)] = {
+            "name": name
+        }
+
+        self.save()
+    """
     def enroll(self, name, frames):
         embeddings = []
 
@@ -155,6 +190,7 @@ class FaceSystem:
                 continue
             emb = self.normalize(faces[0].normed_embedding)
             embeddings.append(emb)
+        
 
         if len(embeddings) < ENROLL_IMAGES:
             raise ValueError("Not enough valid face samples")
@@ -167,7 +203,7 @@ class FaceSystem:
         }
 
         self.save()
-
+        """
     # ======================
     # RECOGNITION
     # ======================
@@ -214,6 +250,21 @@ POSE_SEQUENCE = [
     ("RIGHT", 2),
 ]
 
+# ==========================
+# FACE SELECTION
+# ==========================
+def select_closest_face(faces):
+    """
+    Select the largest face (closest to camera) from detected faces.
+    Uses bounding box area as proximity metric.
+    """
+    if not faces:
+        return None
+    return max(
+        faces,
+        key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
+    )
+
 def enroll_via_keyboard(system, cam):
     name = ask_person_name()
     if not name:
@@ -240,10 +291,9 @@ def enroll_via_keyboard(system, cam):
             continue
 
         faces = system.app.get(frame)
-        if len(faces) != 1:
+        face = select_closest_face(faces)
+        if not face:
             continue
-
-        face = faces[0]
 
         # Quality gate ONLY
         if system.occlusion_score(face) < OCCLUSION_LANDMARK_RATIO:
@@ -255,7 +305,9 @@ def enroll_via_keyboard(system, cam):
             tk_alert(f"Please face {pose_label}")
             last_instruction = pose_label
 
-        collected.append(frame.copy())
+        #collected.append(frame.copy())
+        embedding = system.normalize(face.normed_embedding)
+        collected.append(embedding)
         captured_for_pose += 1
         print(f"[ENROLL] {pose_label}: {captured_for_pose}/{required_count}")
 
@@ -278,10 +330,11 @@ def enroll_via_keyboard(system, cam):
 # MAIN LOOP
 # ==========================
 def main():
-    cam = openCam()
+    cam = cv2.VideoCapture(0)
     system = FaceSystem()
     tracker = IdentityTracker()
     pressed_keys = set()
+    frame_count = 0
 
     def on_key(event):
         pressed_keys.add(event.char.lower())
@@ -293,10 +346,18 @@ def main():
         if not ret:
             break
 
-        faces = system.app.get(frame)
+        frame_count += 1
 
-        for face in faces:
-            box = face.bbox.astype(int)
+        # Optimize: Scale frame for faster processing
+        display_frame = frame.copy()
+        process_frame = cv2.resize(frame, (0, 0), fx=VIDEO_SCALE, fy=VIDEO_SCALE)
+
+        faces = system.app.get(process_frame)
+        face = select_closest_face(faces)
+
+        if face:
+            # Scale bbox back to original frame size
+            box = (face.bbox / VIDEO_SCALE).astype(int)
             occ_score = system.occlusion_score(face)
 
             emb = face.normed_embedding
@@ -308,14 +369,14 @@ def main():
             color = (0, 255, 0) if locked else (0, 0, 255)
             label = locked if locked else "Unknown"
 
-            cv2.rectangle(frame, box[:2], box[2:], color, 2)
-            cv2.putText(frame, label, (box[0], box[1] - 10),
+            cv2.rectangle(display_frame, box[:2], box[2:], color, 2)
+            cv2.putText(display_frame, label, (box[0], box[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
             # Occlusion alert
             if occ_score < OCCLUSION_LANDMARK_RATIO:
-                cv2.rectangle(frame, box[:2], box[2:], (0, 0, 255), 2)
-                cv2.putText(frame, "REMOVE OBSTRUCTION",
+                cv2.rectangle(display_frame, box[:2], box[2:], (0, 0, 255), 2)
+                cv2.putText(display_frame, "REMOVE OBSTRUCTION",
                             (box[0], box[3] + 25),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7,
                             (0, 0, 255), 2)
@@ -327,11 +388,12 @@ def main():
                             "Occlusion Detected")
 
 
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Optimize: Efficient image conversion and display
+        rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
         imgtk = ImageTk.PhotoImage(image=img)
+        panel.imgtk = imgtk  # Store reference to prevent garbage collection
         panel.configure(image=imgtk)
-        panel.image = imgtk
         root.update_idletasks()
         root.update()
 

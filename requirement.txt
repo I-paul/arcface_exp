@@ -8,3 +8,6 @@ insightface
 faiss-cpu
 webdataset
 datasets
+onnxruntime
+onnxruntime-openvino 
+openvino
