@@ -1,7 +1,13 @@
-# Ignore all folders
-*/
+celeba_subset/
+celeba_wds/
+embeddings_db/
 
+.vscode/
+__pycache__/
+node_modules/
+.env
 # Keep all files
+
 !*.py
 !*.ipynb
 !*.txt
