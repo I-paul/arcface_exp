@@ -9,9 +9,23 @@ from pathlib import Path
 from collections import deque
 from webcam_conn import openCam
 import time
+try:
+    from gpu_monitor import print_gpu_info
+    GPU_MONITOR_AVAILABLE = True
+except ImportError:
+    GPU_MONITOR_AVAILABLE = False
 # ==========================
 # CONFIG
 # ==========================
+import torch
+
+# Verify GPU availability
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {DEVICE}")
+if DEVICE == "cuda":
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+
 DB_DIR = Path("embeddings_db")
 DB_DIR.mkdir(exist_ok=True)
 
@@ -22,17 +36,20 @@ EMBEDDING_DIM = 512
 ENROLL_IMAGES = 5
 
 RECOGNITION_THRESHOLD = 0.65
-LOCK_FRAMES = 25
+LOCK_FRAMES = 1
 OCCLUSION_LANDMARK_RATIO = 0.6
 
 # Video Optimization
 VIDEO_SCALE = 0.75  # Scale down frames for processing efficiency
-TARGET_FPS = 30
 FRAME_SKIP = 2  # Process every Nth frame (1 = process all). Increase to 2+ for higher display FPS
+TARGET_FPS = 30  # Target frame rate for display
+ALERT_COOLDOWN = 3  # Seconds between alerts
 
 from PIL import Image, ImageTk
 import tkinter as tk
 from tkinter import ttk
+from queue import Queue
+import threading
 
 root = tk.Tk()
 root.title("Attendance System")
@@ -54,6 +71,10 @@ root.resizable(True, True)
 # Video panel (centered and expandable)
 panel = tk.Label(root, bg="black")
 panel.pack(fill=tk.BOTH, expand=True, anchor=tk.CENTER)
+
+# Alert queue for non-blocking notifications
+alert_queue = Queue()
+last_alert_time = {"occlusion": 0}
 def ask_person_name():
     """
     Modal Tkinter dialog to ask for person name.
@@ -91,7 +112,12 @@ def ask_person_name():
 
     dialog.wait_window()
     return result["name"]
-def tk_alert(message, title="Instruction"):
+def tk_alert(message, title="Instruction", blocking=True):
+    """Show alert dialog. If blocking=False, queues it for non-blocking display."""
+    if not blocking:
+        alert_queue.put((message, title))
+        return
+    
     dialog = tk.Toplevel()
     dialog.title(title)
     dialog.geometry("360x120")
@@ -103,17 +129,44 @@ def tk_alert(message, title="Instruction"):
 
     dialog.wait_window()
 
+def process_alert_queue():
+    """Process queued alerts without blocking video."""
+    if not alert_queue.empty():
+        message, title = alert_queue.get()
+        # Non-modal alert
+        dialog = tk.Toplevel()
+        dialog.title(title)
+        dialog.geometry("360x120")
+        dialog.resizable(False, False)
+        # No grab_set() - allows video to continue
+        
+        ttk.Label(dialog, text=message, wraplength=330, justify="center").pack(pady=20)
+        ttk.Button(dialog, text="OK", command=dialog.destroy).pack()
+        
+        # Auto-close after 2 seconds
+        dialog.after(2000, dialog.destroy)
+
 
 # ==========================
 # FACE SYSTEM
 # ==========================
 class FaceSystem:
     def __init__(self):
+        print("[FaceSystem] Initializing FaceAnalysis with GPU support...")
+        
+        # Configure ONNX Runtime for GPU
         self.app = FaceAnalysis(
             name="buffalo_l",
-            providers=["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+            providers=[
+                "CUDAExecutionProvider",  # GPU - prioritized
+                "CPUExecutionProvider"    # CPU - fallback
+            ],
+            allowed_modules=None
         )
+
+        # Initialize with GPU context (ctx_id=0 is GPU 0)
         self.app.prepare(ctx_id=0, det_size=(640, 640))
+        print(f"[FaceSystem] FaceAnalysis initialized with GPU context")
 
         self.index = faiss.IndexFlatIP(EMBEDDING_DIM)
         self.meta = {}
@@ -121,6 +174,7 @@ class FaceSystem:
         if FAISS_PATH.exists():
             self.index = faiss.read_index(str(FAISS_PATH))
             self.meta = json.load(open(META_PATH))
+            print(f"[FaceSystem] Loaded FAISS index with {self.index.ntotal} entries")
     def estimate_yaw(self, face):
         """
         Estimate yaw using nose deviation from eye center.
@@ -232,7 +286,8 @@ class IdentityTracker:
         self.lock_counter = 0
         self.emb_history = deque(maxlen=10)
         self.last_occlusion_alert = 0
-
+        # Cache last face result for skipped frames
+        self.cached_result = None
 
     def update(self, name):
         if name:
@@ -244,6 +299,14 @@ class IdentityTracker:
             self.locked_name = None
 
         return self.locked_name
+    
+    def set_cache(self, face_data):
+        """Cache face detection result for skipped frames."""
+        self.cached_result = face_data
+    
+    def get_cache(self):
+        """Get cached face detection result."""
+        return self.cached_result
 POSE_SEQUENCE = [
     ("FRONT", 1),
     ("LEFT", 2),
@@ -335,6 +398,10 @@ def main():
     tracker = IdentityTracker()
     pressed_keys = set()
     frame_count = 0
+    
+    # FPS control
+    frame_time = 1.0 / TARGET_FPS
+    last_process_time = time.time()
 
     def on_key(event):
         pressed_keys.add(event.char.lower())
@@ -342,28 +409,50 @@ def main():
     root.bind("<Key>", on_key)
 
     while True:
+        loop_start = time.time()
+        
         ret, frame = cam.read()
         if not ret:
             break
 
         frame_count += 1
-
-        # Optimize: Scale frame for faster processing
         display_frame = frame.copy()
-        process_frame = cv2.resize(frame, (0, 0), fx=VIDEO_SCALE, fy=VIDEO_SCALE)
-
-        faces = system.app.get(process_frame)
-        face = select_closest_face(faces)
+        
+        # Implement FRAME_SKIP: only process face detection every Nth frame
+        should_process = (frame_count % FRAME_SKIP == 0)
+        
+        if should_process:
+            # Scale frame for faster processing
+            process_frame = cv2.resize(frame, (0, 0), fx=VIDEO_SCALE, fy=VIDEO_SCALE)
+            faces = system.app.get(process_frame)
+            face = select_closest_face(faces)
+            
+            # Cache the result
+            if face:
+                box = (face.bbox / VIDEO_SCALE).astype(int)
+                occ_score = system.occlusion_score(face)
+                emb = face.normed_embedding
+                name, conf = system.recognize(emb)
+                locked = tracker.update(name)
+                
+                # Cache for skipped frames
+                tracker.set_cache({
+                    'box': box,
+                    'occ_score': occ_score,
+                    'locked': locked
+                })
+            else:
+                tracker.set_cache(None)
+        
+        # Use cached result for display
+        cached = tracker.get_cache()
+        face = cached
 
         if face:
-            # Scale bbox back to original frame size
-            box = (face.bbox / VIDEO_SCALE).astype(int)
-            occ_score = system.occlusion_score(face)
-
-            emb = face.normed_embedding
-            name, conf = system.recognize(emb)
-
-            locked = tracker.update(name)
+            # Use cached face data
+            box = face['box']
+            occ_score = face['occ_score']
+            locked = face['locked']
 
             # Draw
             color = (0, 255, 0) if locked else (0, 0, 255)
@@ -373,7 +462,7 @@ def main():
             cv2.putText(display_frame, label, (box[0], box[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-            # Occlusion alert
+            # Occlusion alert (non-blocking)
             if occ_score < OCCLUSION_LANDMARK_RATIO:
                 cv2.rectangle(display_frame, box[:2], box[2:], (0, 0, 255), 2)
                 cv2.putText(display_frame, "REMOVE OBSTRUCTION",
@@ -382,28 +471,39 @@ def main():
                             (0, 0, 255), 2)
 
                 now = time.time()
-                if now - tracker.last_occlusion_alert > 3:
-                    tracker.last_occlusion_alert = now
+                if now - last_alert_time["occlusion"] > ALERT_COOLDOWN:
+                    last_alert_time["occlusion"] = now
                     tk_alert("Face is partially blocked.\nPlease remove mask / hand / object.",
-                            "Occlusion Detected")
+                            "Occlusion Detected", blocking=False)
 
 
+        # Process any queued alerts
+        process_alert_queue()
+        
         # Optimize: Efficient image conversion and display
         rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
         imgtk = ImageTk.PhotoImage(image=img)
         panel.imgtk = imgtk  # Store reference to prevent garbage collection
         panel.configure(image=imgtk)
-        root.update_idletasks()
-        root.update()
-
+        
+        # Handle keyboard input
         if 'r' in pressed_keys:
             pressed_keys.clear()
             enroll_via_keyboard(system, cam)
 
         if 'q' in pressed_keys:
             break
-
+        
+        # Update GUI (non-blocking)
+        root.update_idletasks()
+        root.update()
+        
+        # Frame rate limiting for smooth display
+        elapsed = time.time() - loop_start
+        sleep_time = frame_time - elapsed
+        if sleep_time > 0:
+            time.sleep(sleep_time)
 
     cam.release()
     root.destroy()
@@ -411,4 +511,8 @@ def main():
     
 
 if __name__ == "__main__":
+    # Print GPU information at startup
+    if GPU_MONITOR_AVAILABLE:
+        print_gpu_info()
+    
     main()

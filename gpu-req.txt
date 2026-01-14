@@ -1,26 +1,28 @@
 # ============================================
-# PYTORCH & DEEP LEARNING (GPU OPTIMIZED)
+# PYTORCH WITH CUDA 12.1 SUPPORT
 # ============================================
+--index-url https://download.pytorch.org/whl/cu121
+
 torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
 torchmetrics>=0.11.0
 
 # ============================================
-# GPU & ACCELERATION
+# GPU RUNTIME & ACCELERATION
 # ============================================
 onnxruntime-gpu>=1.15.0
 faiss-cpu>=1.7.4
 
 # ============================================
-# FACE RECOGNITION & DETECTION
+# FACE RECOGNITION
 # ============================================
 insightface>=0.7.3
-opencv-python>=4.8.0
 
 # ============================================
-# DATA PROCESSING & UTILITIES
+# COMPUTER VISION & DATA PROCESSING
 # ============================================
+opencv-python>=4.8.0
 numpy>=1.23.0,<2.0
 pillow>=9.0
 tqdm>=4.65.0
@@ -28,13 +30,6 @@ webdataset>=0.2.0
 datasets>=2.10.0
 
 # ============================================
-# VISUALIZATION (Tkinter already included with Python)
+# NOTE: Install with:
+# pip install -r gpu-req.txt
 # ============================================
-# PIL/Pillow is included above
-
-# ============================================
-# OPTIONAL: GPU MONITORING & UTILITIES
-# ============================================
-# Uncomment if you want to monitor GPU usage
-# gpustat>=1.0
-# nvidia-ml-py>=11.0
