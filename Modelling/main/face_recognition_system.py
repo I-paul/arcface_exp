@@ -8,12 +8,7 @@ import os
 from pathlib import Path
 from collections import deque
 from webcam_conn import openCam
-import time
-try:
-    from gpu_monitor import print_gpu_info
-    GPU_MONITOR_AVAILABLE = True
-except ImportError:
-    GPU_MONITOR_AVAILABLE = False
+import time                              
 # ==========================
 # CONFIG
 # ==========================
@@ -512,7 +507,4 @@ def main():
 
 if __name__ == "__main__":
     # Print GPU information at startup
-    if GPU_MONITOR_AVAILABLE:
-        print_gpu_info()
-    
     main()

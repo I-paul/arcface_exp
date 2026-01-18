@@ -38,3 +38,8 @@ datasets>=2.10.0
 # Uncomment if you want to monitor GPU usage
 # gpustat>=1.0
 # nvidia-ml-py>=11.0
+
+# ============================================
+# VectorDB
+# ============================================
+pymilvus==2.4.3
