@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; }
+.app { min-height: 100vh; display: flex; flex-direction: column; }
+.topbar { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; background: #111827; border-bottom: 1px solid #1f2937; }
+.nav button { margin-left: 8px; padding: 8px 14px; background: #1f2937; color: #e2e8f0; border: 1px solid #334155; border-radius: 6px; cursor: pointer; }
+.nav button.active { background: #2563eb; border-color: #2563eb; }
+.content { flex: 1; padding: 24px; display: flex; justify-content: center; align-items: flex-start; }
+.card { width: 100%; max-width: 720px; background: #111827; border: 1px solid #1f2937; border-radius: 12px; padding: 20px; }
+.field { display: flex; flex-direction: column; margin-bottom: 12px; }
+.field input { padding: 10px; border-radius: 8px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
+.video-box { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 10px; padding: 10px; margin: 12px 0; min-height: 240px; display: flex; align-items: center; justify-content: center; }
+.video { width: 100%; border-radius: 8px; }
+.actions { display: flex; gap: 10px; margin: 12px 0; }
+button { padding: 10px 14px; border-radius: 8px; border: none; background: #2563eb; color: #fff; cursor: pointer; }
+button.secondary { background: #1f2937; border: 1px solid #334155; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.prompt { margin-top: 4px; color: #cbd5e1; }
+.muted { color: #94a3b8; }
+.success { margin-top: 10px; color: #22c55e; }
+.error { margin-top: 10px; color: #f87171; }
+.result { margin-top: 12px; padding: 12px; border: 1px solid #1f2937; border-radius: 10px; background: #0b1222; }
