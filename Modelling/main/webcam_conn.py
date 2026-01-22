@@ -1,6 +1,6 @@
 import cv2
 
-CAMERA_SOURCE = "http://192.168.1.5:8080/video"
+CAMERA_SOURCE = "http://192.168.1.4:8080/video"
 
 
 def parse_camera_source(arg: str):

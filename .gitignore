@@ -6,10 +6,7 @@ embeddings_db/
 __pycache__/
 node_modules/
 .env
-venv/
 # Keep all files
+venv/
 
-!*.py
-!*.ipynb
-!*.txt
-!*.md
+webcam_conn.py
