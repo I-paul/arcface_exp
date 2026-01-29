@@ -1,6 +1,12 @@
 const pool = require('../DB/config');
+<<<<<<< Updated upstream
 const fs = require('fs');
 const path = require('path');
+=======
+const axios = require('axios');
+const FormData = require('form-data');
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+>>>>>>> Stashed changes
 
 const REQUIRED_FIELDS = ['first_name', 'last_name', 'email'];
 const UPDATABLE_FIELDS = [
@@ -23,6 +29,7 @@ const UPDATABLE_FIELDS = [
  */
 const registerFaceEncoding = async (name) => {
 	try {
+<<<<<<< Updated upstream
 		// Call enroll script to enroll a new face
 		const registerFace = path.join(__dirname, '../../../modelling/arc_face/arcface_enroll.py');
 		const { exec } = require('child_process');
@@ -42,12 +49,78 @@ const registerFaceEncoding = async (name) => {
 					resolve(0);
 				}
 			});
+=======
+		const { name } = req.body;
+		if (!name) {
+			return res.status(400).json({ message: 'Name is required for enrollment' });
+		}
+		
+		// With multer.memoryStorage(), files are in req.files['files'] as Buffer objects
+		const files = req.files?.['files'] || [];
+		
+		if (!files.length) {
+			return res.status(400).json({ message: 'At least one image file is required' });
+		}
+		if (files.length < 3) {
+			return res.status(400).json({ message: 'At least 3 images are required for enrollment' });
+		}
+
+		const form = new FormData();
+		form.append('name', name);
+		
+		// Append file buffers directly to form data
+		files.forEach((file) => {
+			form.append('files', file.buffer, file.originalname);
+>>>>>>> Stashed changes
 		});
 
 		return exitCode;
 	} catch (error) {
+<<<<<<< Updated upstream
 		console.error('[ERROR] Error registering face encoding:', error.message);
 		return 1; // Return failure code
+=======
+		const status = error.response?.status || 500;
+		const detail = error.response?.data;
+		const message = detail?.message || detail?.detail || 'Enrollment failed';
+		console.error('[ERROR] Enrollment error:', detail || message);
+		return res.status(status).json({ message, detail: detail?.detail });
+	}
+};
+
+/**
+ * Call ML service /recognize endpoint.
+ */
+const recognizeFace = async (req, res) => {
+	try {
+		if (!req.file) {
+			return res.status(400).json({ message: 'Image file is required' });
+		}
+
+		const form = new FormData();
+		// With memoryStorage, file.buffer contains the data
+		form.append('file', req.file.buffer, req.file.originalname);
+
+		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
+			headers: form.getHeaders(),
+			timeout: 20000,
+		});
+
+		return res.status(200).json({
+			message: data.name
+				? `Recognized ${data.name}`
+				: 'Unknown face',
+			name: data.name || null,
+			confidence: data.confidence ?? null,
+			is_recognized: Boolean(data.is_recognized),
+		});
+	} catch (error) {
+		const status = error.response?.status || 500;
+		const detail = error.response?.data;
+		const message = detail?.message || detail?.detail || 'Recognition failed';
+		console.error('[ERROR] Recognition error:', detail || message);
+		return res.status(status).json({ message, detail: detail?.detail });
+>>>>>>> Stashed changes
 	}
 };
 
