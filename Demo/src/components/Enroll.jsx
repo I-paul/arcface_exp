@@ -8,13 +8,12 @@ const steps = [
 ];
 
 const USE_IP_WEBCAM = false; // Set to true to use IP camera
-const IP_WEBCAM_URL = 'http://10.1.31.201:8080/video'; // Change to your IP webcam URL
+const IP_WEBCAM_URL = 'http://192.168.1.3:8080/video'; // Change to your IP webcam URL
 
 export default function Enroll() {
   const [name, setName] = useState('');
   const [stepIdx, setStepIdx] = useState(0);
   const [captures, setCaptures] = useState([]);
-  const [captureCounts, setCaptureCounts] = useState({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -58,7 +57,6 @@ export default function Enroll() {
       canvas.width = img.naturalWidth || 640;
       canvas.height = img.naturalHeight || 480;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     } else {
       const video = document.getElementById('enroll-video');
@@ -66,7 +64,6 @@ export default function Enroll() {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     }
     return canvas;
@@ -81,20 +78,12 @@ export default function Enroll() {
       return;
     }
     canvas.toBlob((blob) => {
-      if (!blob) {
-        setError('Capture failed');
-        return;
-      }
       setCaptures((prev) => [...prev, { step: step.label, blob }]);
-      setCaptureCounts((prev) => {
-        const next = { ...prev, [step.label]: (prev[step.label] || 0) + 1 };
-        const neededForStep = steps[stepIdx].captures;
-        const takenForStep = next[step.label];
-        if (takenForStep >= neededForStep) {
-          setStepIdx((current) => (current < steps.length - 1 ? current + 1 : current));
-        }
-        return next;
-      });
+      const neededForStep = steps[stepIdx].captures;
+      const takenForStep = captures.filter((c) => c.step === step.label).length + 1;
+      if (takenForStep >= neededForStep && stepIdx < steps.length - 1) {
+        setStepIdx(stepIdx + 1);
+      }
     }, 'image/jpeg', 0.9);
   };
 
@@ -116,15 +105,14 @@ export default function Enroll() {
       captures.forEach((c, idx) => {
         form.append('files', c.blob, `capture-${idx + 1}.jpg`);
       });
-      const { data } = await axios.post('/api/enroll', form, {
+      const { data } = await axios.post('http://localhost:3000/api/enroll', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setMessage(data.message || 'Enrollment complete');
       setCaptures([]);
-      setCaptureCounts({});
       setStepIdx(0);
     } catch (err) {
-      const detail = err.response?.data?.message || err.response?.data?.detail || 'Enrollment failed';
+      const detail = err.response?.data?.message || 'Enrollment failed';
       setError(detail);
     } finally {
       setBusy(false);

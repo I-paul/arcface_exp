@@ -5,20 +5,16 @@ const {
 	getEmployeeById,
 	updateEmployee,
 	deleteEmployee,
+	enrollFace,
+	recognizeFace,
 } = require('../models/employee.model');
-<<<<<<< Updated upstream
-=======
 const multer = require('multer');
+const os = require('os');
+const path = require('path');
 
-// Use memory storage for temporary files (auto-cleaned, no persistence needed)
-const upload = multer({ 
-	storage: multer.memoryStorage(),
-	limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max file size
-});
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+// Use OS temp directory for temporary file storage
+const tempDir = path.join(os.tmpdir(), 'face-recognition-temp');
+const upload = multer({ dest: tempDir });
 
 const router = express.Router();
 
@@ -30,12 +26,9 @@ router.get('/employee/:id', getEmployeeById);
 router.put('/employee/:id', updateEmployee);
 router.delete('/employee/:id', deleteEmployee);
 
-<<<<<<< Updated upstream
-=======
 // Face endpoints
-// Use .fields() to handle both 'files' and 'name' in multipart form data
-router.post('/enroll', upload.fields([{ name: 'files', maxCount: 5 }]), enrollFace);
+router.post('/enroll', upload.array('files', 5), enrollFace);
 router.post('/recognize', upload.single('file'), recognizeFace);
 
->>>>>>> Stashed changes
+
 module.exports = router;

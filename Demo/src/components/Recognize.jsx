@@ -3,12 +3,11 @@ import axios from 'axios';
 
 const POLL_MS = 1200;
 const USE_IP_WEBCAM = false; // Set to true to use IP camera
-const IP_WEBCAM_URL = 'http://10.1.31.201:8080/video'; // Change to your IP webcam URL
+const IP_WEBCAM_URL = 'http://192.168.1.3:8080/video'; // Change to your IP webcam URL
 
 export default function Recognize() {
   const videoRef = useRef(null);
   const imgRef = useRef(null);
-  const inFlight = useRef(false);
   const [ready, setReady] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
@@ -45,8 +44,6 @@ export default function Recognize() {
   useEffect(() => {
     if (!ready) return;
     const interval = setInterval(async () => {
-      if (inFlight.current) return;
-      inFlight.current = true;
       try {
         let frame;
         if (useIpWebcam) {
@@ -58,19 +55,16 @@ export default function Recognize() {
         }
         if (!frame) return;
         const blob = await new Promise((resolve) => frame.toBlob(resolve, 'image/jpeg', 0.9));
-        if (!blob) return;
         const form = new FormData();
         form.append('file', blob, 'frame.jpg');
-        const { data } = await axios.post('/api/recognize', form, {
+        const { data } = await axios.post('http://localhost:3000/api/recognize', form, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
         setResult(data);
         setError('');
       } catch (err) {
-        const detail = err.response?.data?.message || err.response?.data?.detail || 'Recognition failed';
+        const detail = err.response?.data?.message || 'Recognition failed';
         setError(detail);
-      } finally {
-        inFlight.current = false;
       }
     }, POLL_MS);
 

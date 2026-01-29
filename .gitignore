@@ -8,5 +8,6 @@ node_modules/
 .env
 # Keep all files
 venv/
+.venv/
 volumes/
 webcam_conn.py

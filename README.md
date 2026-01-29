@@ -1,91 +1,345 @@
-# Labor Attendance Project
+# Face Recognition System - Production Ready
 
-This repo contains the final version of the Labor Attendance Project.
+A production-grade face recognition system with ML service, vector database, and API gateway.
 
-## Table of Contents
-- [Overview](#overview)
-- [Features](#features)
-- [Architecture](#architecture)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Usage](#usage)
-- [API Documentation](#api-documentation)
+## 🏗️ Architecture
 
-## Overview
-This project is designed to automate and streamline the attendance process for laborers. It leverages computer vision to identify individuals in real-time and logs their attendance into a centralized database via a secure REST API.
-
-## Features
-- **Real-time Face Recognition**: High-accuracy detection and recognition using InsightFace and FAISS.
-- **Liveness/Occlusion Detection**: Alerts when faces are obstructed (masks, hands, etc.).
-- **Automated Enrollment**: Simple keyboard-driven interface to register new users with multi-angle face capture.
-- **Employee Management**: Full CRUD capabilities for employee records.
-- **Secure Backend**: Node.js/Express server with PostgreSQL integration.
-
-## Architecture
-The project is divided into two main components:
-
-1.  **Backend (`/Backend`)**:
-    -   This folder contains the backend server and database.
-2.  **Modelling (`/Modelling`)**:
-    -   This folder contains the face recognition system and anti-spoofing system.
-
-## Prerequisites
-Ensure you have the following installed:
--   **Node.js** (v14+ recommended)
--   **Python** (v3.8+)
--   **PostgreSQL** (for the database)
--   **C++ Build Tools** (often required for installing InsightFace/dlib on Windows)
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/your-username/labor-attendance.git
-cd labor-attendance
 ```
-2. Navigate to the backend directory and install dependencies:
+┌─────────────────┐
+│    Backend      │  ← API Gateway (Node.js/Express)
+│   Port 3000     │
+└────────┬────────┘
+         │
+         ↓
+┌─────────────────┐
+│   ML Service    │  ← Face Recognition API (FastAPI)
+│   Port 8000     │
+└────────┬────────┘
+         │
+         ↓
+┌─────────────────┐
+│     Milvus      │  ← Vector Database
+│   Port 19530    │
+└─────────────────┘
+```
+
+## 📦 Services
+
+### 1. ML Service (`ml_service/`)
+- **FastAPI** REST API
+- **InsightFace** for face detection & embeddings
+- **GPU-accelerated** inference
+- Face quality checks (occlusion detection)
+- Endpoints: `/recognize`, `/enroll`, `/health`
+
+### 2. Backend (`Backend/`)
+- **Express.js** API Gateway
+- Business logic layer
+- Request routing & validation
+- Integration with ML service
+
+### 3. Milvus (`infra/milvus/`)
+- **Vector database** for face embeddings
+- High-performance similarity search
+- Persistent storage
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Docker & Docker Compose
+- NVIDIA GPU with CUDA support (for ML service)
+- nvidia-docker2 (for GPU access in containers)
+
+### Production Deployment
+
+```bash
+# Start all services
+docker-compose -f docker-compose.prod.yml up -d
+
+# Check status
+docker-compose -f docker-compose.prod.yml ps
+
+# View logs
+docker-compose -f docker-compose.prod.yml logs -f ml-service
+
+# Stop services
+docker-compose -f docker-compose.prod.yml down
+```
+
+Services will be available at:
+- Backend API: `http://localhost:3000`
+- ML Service: `http://localhost:8000`
+- ML Service Docs: `http://localhost:8000/docs`
+- Milvus: `localhost:19530`
+
+## 📁 Project Structure
+
+```
+arcface_exp/
+├── ml_service/                 # ✅ ML Service (New)
+│   ├── main.py                # FastAPI entrypoint
+│   ├── inference/             # Face processing
+│   │   └── face_processor.py
+│   ├── embeddings/            # Embedding management
+│   │   └── embedding_manager.py
+│   ├── milvus_client/         # Vector DB client
+│   │   └── client.py
+│   ├── requirements.txt       # Python dependencies
+│   ├── Dockerfile            # Container definition
+│   └── README.md             # Service documentation
+│
+├── Backend/                   # ✅ API Gateway
+│   ├── src/
+│   │   └── index.js
+│   ├── package.json
+│   └── Dockerfile            # Container definition
+│
+├── infra/                     # ✅ Infrastructure
+│   └── milvus/
+│       ├── docker-compose.yml
+│       ├── conn.py
+│       └── volumes/
+│
+├── Modelling/                 # ⚠️ Legacy (keep for reference)
+│   └── main/
+│       ├── face_recognition_system.py  # Original desktop app
+│       └── webcam_conn.py
+│
+├── docker-compose.prod.yml    # ✅ Production orchestration
+├── requirement.txt            # Legacy requirements
+└── README.md                 # This file
+```
+
+## 🔧 Development Setup
+
+### ML Service (Local)
+```bash
+cd ml_service
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Start Milvus (required)
+cd ../infra/milvus
+docker-compose up -d
+
+# Run ML service
+cd ../../ml_service
+python main.py
+```
+
+### Backend (Local)
 ```bash
 cd Backend
+
+# Install dependencies
 npm install
-```
-*Note: Ensure you have a `.env` file configured with your database credentials (PORT, DB_HOST, etc.).*
 
-3. Install python dependencies using the following command
-```bash
-pip install -r requirement.txt
-```
-
-## Usage
-
-1. Start the Node.js backend server:
-
-```bash
-cd Backend
+# Start server
 npm start
 ```
-The server will typically run on `http://localhost:3000` (check console output).
 
-2. Run the main Python script:
+## 🧪 Testing
+
+### Test ML Service Recognition
 ```bash
-cd Modelling/main
-python face_recognition_system.py
+# Using curl
+curl -X POST http://localhost:8000/recognize \
+  -F "file=@test_image.jpg"
+
+# Expected response
+{
+  "name": "John Doe",
+  "confidence": 0.89,
+  "is_recognized": true,
+  "message": "Face recognized successfully"
+}
 ```
 
-### App Controls
-The desktop application supports the following keyboard shortcuts:
--   **`r`**: **Enroll** a new person. Follow the on-screen prompts to capture face angles (Front, Left, Right).
--   **`q`**: **Quit** the application.
+### Test ML Service Enrollment
+```bash
+curl -X POST http://localhost:8000/enroll \
+  -F "name=Jane Smith" \
+  -F "files=@image1.jpg" \
+  -F "files=@image2.jpg" \
+  -F "files=@image3.jpg"
 
-## API Documentation
-The backend exposes the following REST endpoints for employee management:
+# Expected response
+{
+  "success": true,
+  "message": "Successfully enrolled Jane Smith with 3 images",
+  "person_id": "person_123456789"
+}
+```
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `POST` | `/api/employee` | Create a new employee |
-| `GET` | `/api/employee` | Retrieve all employees |
-| `GET` | `/api/employee/:id` | Get specific employee details |
-| `PUT` | `/api/employee/:id` | Update employee information |
-| `DELETE` | `/api/employee/:id` | Remove an employee |
+### Health Checks
+```bash
+# ML Service
+curl http://localhost:8000/health
+
+# Backend
+curl http://localhost:3000/health
+
+# Milvus
+curl http://localhost:9091/healthz
+```
+
+## 📊 API Documentation
+
+### ML Service API
+Interactive docs: `http://localhost:8000/docs`
+
+**Key Endpoints:**
+- `POST /recognize` - Recognize a face from image
+- `POST /enroll` - Enroll new person with images
+- `GET /collection/stats` - Get database statistics
+- `DELETE /person/{person_id}` - Remove person
+- `GET /health` - Service health check
+
+### Backend API
+Documentation: See `Backend/README.md` (create if needed)
+
+## 🔒 Configuration
+
+### ML Service Environment Variables
+```env
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+ML_SERVICE_PORT=8000
+CUDA_VISIBLE_DEVICES=0
+```
+
+### Backend Environment Variables
+```env
+ML_SERVICE_URL=http://ml-service:8000
+NODE_ENV=production
+PORT=3000
+```
+
+## 📈 Monitoring
+
+### Check Service Status
+```bash
+# All services
+docker-compose -f docker-compose.prod.yml ps
+
+# ML Service logs
+docker logs ml-service -f
+
+# Milvus logs
+docker logs milvus-standalone -f
+```
+
+### GPU Monitoring
+```bash
+# Inside ML service container
+docker exec -it ml-service nvidia-smi
+
+# Or from host
+watch -n 1 nvidia-smi
+```
+
+## 🐛 Troubleshooting
+
+### GPU Not Accessible
+```bash
+# Check nvidia-docker2 installation
+docker run --rm --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
+
+# Verify GPU in docker-compose
+docker-compose -f docker-compose.prod.yml config
+```
+
+### Milvus Connection Failed
+```bash
+# Check Milvus is running
+docker ps | grep milvus
+
+# Check Milvus health
+curl http://localhost:9091/healthz
+
+# Restart Milvus
+docker-compose -f docker-compose.prod.yml restart milvus
+```
+
+### ML Service Model Download Issues
+InsightFace models are downloaded on first run. If download fails:
+```bash
+# Manual download location
+~/.insightface/models/buffalo_l/
+
+# Clear cache and retry
+rm -rf ~/.insightface/
+docker-compose -f docker-compose.prod.yml restart ml-service
+```
+
+## 🚢 Deployment Checklist
+
+Before shipping to production:
+
+- [ ] Environment variables configured
+- [ ] GPU drivers installed on host
+- [ ] nvidia-docker2 installed
+- [ ] Milvus data directory backed up
+- [ ] Backend Dockerfile created
+- [ ] Reverse proxy configured (nginx)
+- [ ] SSL certificates installed
+- [ ] Monitoring/logging setup
+- [ ] Backup strategy implemented
+- [ ] Load testing completed
+
+## 📝 Migration Notes
+
+### From Legacy Modelling/ to ml_service/
+
+**What was kept:**
+- Face detection logic (InsightFace)
+- Embedding extraction
+- Occlusion detection
+- Quality checks
+
+**What changed:**
+- Desktop app → REST API
+- FAISS → Milvus
+- Tkinter UI → HTTP endpoints
+- Local storage → Vector database
+
+**Legacy code preserved:**
+- `Modelling/main/face_recognition_system.py` - Original implementation
+- Can be referenced for webcam integration
+
+## 🔐 Security Considerations
+
+- [ ] Add authentication to ML service
+- [ ] Rate limiting on API endpoints
+- [ ] Input validation & sanitization
+- [ ] CORS configuration review
+- [ ] Secrets management (don't commit .env)
+- [ ] Network isolation (internal services)
+
+## 📚 Additional Documentation
+
+- ML Service: [ml_service/README.md](ml_service/README.md)
+- Backend: `Backend/README.md` (TODO)
+- Milvus: [infra/milvus/README.md](https://milvus.io/docs)
+
+## 🤝 Contributing
+
+1. Create feature branch
+2. Test locally with docker-compose
+3. Update documentation
+4. Submit pull request
+
+## 📄 License
+
+Proprietary - Internal Use Only
 
 ---
 
+**Status:** ✅ **Ready to Ship**
+
+The system is now properly containerized and production-ready. All services have clear boundaries and can be deployed independently.

@@ -1,15 +1,13 @@
 const pool = require('../DB/config');
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 const fs = require('fs');
 const path = require('path');
-=======
-=======
->>>>>>> Stashed changes
 const axios = require('axios');
 const FormData = require('form-data');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
->>>>>>> Stashed changes
+const axios = require('axios');
+const FormData = require('form-data');
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+
 
 const REQUIRED_FIELDS = ['first_name', 'last_name', 'email'];
 const UPDATABLE_FIELDS = [
@@ -26,13 +24,70 @@ const UPDATABLE_FIELDS = [
 ];
 
 /**
- * Register face encoding with the Python face recognition system.
- * @param {string} name - Employee name (first_name + last_name)
- * @returns {Promise<number>} - Returns 0 for success, 1 for failure
+ * Call ML service /enroll endpoint.
  */
-const registerFaceEncoding = async (name) => {
+const enrollFace = async (req, res) => {
+	const filesToCleanup = (req.files || []).map((file) => file.path);
 	try {
-<<<<<<< Updated upstream
+		const { name } = req.body;
+		if (!name) {
+			return res.status(400).json({ message: 'Name is required for enrollment' });
+		}
+		if (!req.files || !req.files.length) {
+			return res.status(400).json({ message: 'At least one image file is required' });
+		}
+
+		const form = new FormData();
+		form.append('name', name);
+		req.files.forEach((file) => {
+			form.append('files', fs.createReadStream(file.path), file.originalname);
+		});
+
+		const { data } = await axios.post(`${ML_SERVICE_URL}/enroll`, form, {
+			headers: form.getHeaders(),
+			timeout: 30000,
+		});
+
+		return res.status(200).json({
+			success: true,
+			message: data.message || `Enrolled ${name} successfully`,
+			person_id: data.person_id || null,
+		});
+	} catch (error) {
+		const status = error.response?.status || 500;
+		const detail = error.response?.data || { message: 'Enrollment failed' };
+		console.error('[ERROR] Enrollment error:', detail);
+		return res.status(status).json(detail);
+	} finally {
+		filesToCleanup.forEach((filePath) => {
+			try {
+				if (fs.existsSync(filePath)) {
+					fs.unlinkSync(filePath);
+					console.log(`[CLEANUP] Deleted temp file: ${filePath}`);
+				}
+			} catch (err) {
+				console.error(`[CLEANUP] Failed to delete ${filePath}:`, err.message);
+			}
+		});
+	}
+};
+
+/**
+ * Call ML service /recognize endpoint.
+ */
+const recognizeFace = async (req, res) => {
+	const fileToCleanup = req.file?.path || null;
+	try {
+		if (!req.file) {
+			return res.status(400).json({ message: 'Image file is required' });
+		}
+
+		const form = new FormData();
+		form.append('file', fs.createReadStream(req.file.path), req.file.originalname);
+
+		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
+			headers: form.getHeaders(),
+			timeout: 20000,
 		// Call enroll script to enroll a new face
 		const registerFace = path.join(__dirname, '../../../modelling/arc_face/arcface_enroll.py');
 		const { exec } = require('child_process');
@@ -52,64 +107,6 @@ const registerFaceEncoding = async (name) => {
 					resolve(0);
 				}
 			});
-=======
-		const { name } = req.body;
-		if (!name) {
-			return res.status(400).json({ message: 'Name is required for enrollment' });
-		}
-		
-		// With multer.memoryStorage(), files are in req.files['files'] as Buffer objects
-		const files = req.files?.['files'] || [];
-		
-		if (!files.length) {
-			return res.status(400).json({ message: 'At least one image file is required' });
-		}
-		if (files.length < 3) {
-			return res.status(400).json({ message: 'At least 3 images are required for enrollment' });
-		}
-
-		const form = new FormData();
-		form.append('name', name);
-		
-		// Append file buffers directly to form data
-		files.forEach((file) => {
-			form.append('files', file.buffer, file.originalname);
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
-		});
-
-		return exitCode;
-	} catch (error) {
-<<<<<<< Updated upstream
-		console.error('[ERROR] Error registering face encoding:', error.message);
-		return 1; // Return failure code
-=======
-		const status = error.response?.status || 500;
-		const detail = error.response?.data;
-		const message = detail?.message || detail?.detail || 'Enrollment failed';
-		console.error('[ERROR] Enrollment error:', detail || message);
-		return res.status(status).json({ message, detail: detail?.detail });
-	}
-};
-
-/**
- * Call ML service /recognize endpoint.
- */
-const recognizeFace = async (req, res) => {
-	try {
-		if (!req.file) {
-			return res.status(400).json({ message: 'Image file is required' });
-		}
-
-		const form = new FormData();
-		// With memoryStorage, file.buffer contains the data
-		form.append('file', req.file.buffer, req.file.originalname);
-
-		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
-			headers: form.getHeaders(),
-			timeout: 20000,
 		});
 
 		return res.status(200).json({
@@ -122,14 +119,22 @@ const recognizeFace = async (req, res) => {
 		});
 	} catch (error) {
 		const status = error.response?.status || 500;
-		const detail = error.response?.data;
-		const message = detail?.message || detail?.detail || 'Recognition failed';
-		console.error('[ERROR] Recognition error:', detail || message);
-		return res.status(status).json({ message, detail: detail?.detail });
-<<<<<<< Updated upstream
->>>>>>> Stashed changes
-=======
->>>>>>> Stashed changes
+		const detail = error.response?.data || { message: 'Recognition failed' };
+		console.error('[ERROR] Recognition error:', detail);
+		return res.status(status).json(detail);
+	} finally {
+		if (fileToCleanup) {
+			try {
+				if (fs.existsSync(fileToCleanup)) {
+					fs.unlinkSync(fileToCleanup);
+					console.log(`[CLEANUP] Deleted temp file: ${fileToCleanup}`);
+				}
+			} catch (err) {
+				console.error(`[CLEANUP] Failed to delete ${fileToCleanup}:`, err.message);
+			}
+		}
+		console.error('[ERROR] Error registering face encoding:', error.message);
+		return 1; // Return failure code
 	}
 };
 
@@ -156,21 +161,7 @@ const createEmployee = async (req, res) => {
 			is_active,
 		} = req.body;
 
-		// First, attempt face enrollment
-		const fullName = `${first_name} ${last_name}`;
-		console.log(`[INFO] Starting face enrollment for ${fullName}`);
-		
-		const enrollmentStatus = await registerFaceEncoding(fullName);
-		
-		if (enrollmentStatus !== 0) {
-			console.error(`[ERROR] Face enrollment failed for ${fullName}`);
-			return res.status(400).json({ 
-				message: 'Face enrollment failed. Please ensure the employee image is in the known_faces_arc directory and try again.',
-				error: 'FACE_ENROLLMENT_FAILED'
-			});
-		}
-
-		console.log(`[INFO] Face enrollment successful for ${fullName}. Proceeding with database insert.`);
+		// Face enrollment now handled via /api/enroll endpoint; proceed with DB insert only.
 
 		// Only insert into database if face enrollment succeeds
 		const insertQuery = `
@@ -321,4 +312,6 @@ module.exports = {
 	getEmployeeById,
 	updateEmployee,
 	deleteEmployee,
+	enrollFace,
+	recognizeFace,
 };

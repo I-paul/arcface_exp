@@ -1,9 +1,8 @@
 """
 ML Service API Entrypoint
 Face Recognition and Enrollment Service
-GPU-Optimized with Batch Processing
 """
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,11 +10,13 @@ from typing import List, Optional
 import numpy as np
 import cv2
 import logging
+import json
+import base64
+import time
 from pathlib import Path
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 from inference.face_processor import FaceProcessor
+from inference.recognition_pipeline import RecognitionPipeline
 from embeddings.embedding_manager import EmbeddingManager
 from milvus_client.client import MilvusClient
 
@@ -46,7 +47,7 @@ app.add_middleware(
 face_processor = None
 embedding_manager = None
 milvus_client = None
-executor = ThreadPoolExecutor(max_workers=2)  # For CPU-bound tasks
+recognition_pipeline = None
 
 # Pydantic models
 class RecognitionResponse(BaseModel):
@@ -67,11 +68,7 @@ class HealthResponse(BaseModel):
     status: str
     gpu_available: bool
     milvus_connected: bool
-    gpu_memory: Optional[dict] = None
-
-class BatchRecognitionResponse(BaseModel):
-    results: List[RecognitionResponse]
-    processing_time_ms: float
+    runtime_providers: Optional[dict] = None
 
 # ==========================
 # STARTUP & SHUTDOWN
@@ -79,27 +76,44 @@ class BatchRecognitionResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Initialize ML models and connections on startup"""
-    global face_processor, embedding_manager, milvus_client
+    global face_processor, embedding_manager, milvus_client, recognition_pipeline
     
+    logger.info("="*60)
     logger.info("Starting ML Service...")
+    logger.info("="*60)
     
     try:
         # Initialize Face Processor (InsightFace)
-        logger.info("Initializing Face Processor...")
-        face_processor = FaceProcessor()
+        logger.info("Initializing Face Processor with GPU optimization...")
+        face_processor = FaceProcessor(force_gpu=True)  # Force GPU for production
+        
+        if face_processor.is_gpu_available():
+            logger.info("✓ GPU ENABLED - Recognition and Enrollment will run on GPU")
+        else:
+            logger.error("✗ GPU NOT AVAILABLE - Service may not start correctly")
         
         # Initialize Embedding Manager
         logger.info("Initializing Embedding Manager...")
         embedding_manager = EmbeddingManager()
+
+        # Initialize Recognition Pipeline (tracking + gating + batching)
+        logger.info("Initializing Recognition Pipeline...")
+        recognition_pipeline = RecognitionPipeline()
         
         # Initialize Milvus Client
-        logger.info("Connecting to Milvus...")
+        logger.info("Connecting to Milvus Vector Database...")
         milvus_client = MilvusClient()
         
-        logger.info("ML Service started successfully!")
+        logger.info("="*60)
+        logger.info("✓ ML Service started successfully!")
+        logger.info(f"  - GPU Status: {'ENABLED' if face_processor.is_gpu_available() else 'DISABLED'}")
+        logger.info(f"  - Milvus Status: {'CONNECTED' if milvus_client.is_connected() else 'DISCONNECTED'}")
+        logger.info("="*60)
         
     except Exception as e:
-        logger.error(f"Failed to start ML Service: {str(e)}")
+        logger.error("="*60)
+        logger.error(f"✗ Failed to start ML Service: {str(e)}")
+        logger.error("="*60)
         raise
 
 @app.on_event("shutdown")
@@ -114,16 +128,12 @@ async def shutdown_event():
 # ==========================
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Health check endpoint with GPU memory info"""
-    gpu_mem = None
-    if face_processor and face_processor.is_gpu_available():
-        gpu_mem = face_processor.get_gpu_memory_info()
-    
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "gpu_available": face_processor.is_gpu_available() if face_processor else False,
         "milvus_connected": milvus_client.is_connected() if milvus_client else False,
-        "gpu_memory": gpu_mem
+        "runtime_providers": face_processor.get_runtime_providers() if face_processor else None
     }
 
 @app.get("/")
@@ -139,7 +149,10 @@ async def root():
 # RECOGNITION
 # ==========================
 @app.post("/recognize", response_model=RecognitionResponse)
-async def recognize_face(file: UploadFile = File(...)):
+async def recognize_face(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None)
+):
     """
     Recognize a face from an uploaded image
     
@@ -181,11 +194,44 @@ async def recognize_face(file: UploadFile = File(...)):
                 message="Face is occluded (mask/obstruction detected)"
             )
         
-        # Get embedding
-        embedding = face_processor.get_embedding(face)
-        
-        # Search in Milvus
-        result = milvus_client.search_face(embedding)
+        # Tracking + gating + batching
+        now_ts = time.time()
+        session_key = session_id or "default"
+
+        bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
+        track_ids = recognition_pipeline.update_tracks(session_key, bboxes, now=now_ts)
+
+        embeddings_to_search = []
+        face_indices = []
+
+        for idx, f in enumerate(faces):
+            track = recognition_pipeline.get_track(session_key, track_ids[idx])
+            if recognition_pipeline.should_embed(track, bboxes[idx], now_ts):
+                embeddings_to_search.append(face_processor.get_embedding(f))
+                face_indices.append(idx)
+
+        results = []
+        if embeddings_to_search:
+            results = milvus_client.search_faces(embeddings_to_search)
+            for r_idx, face_idx in enumerate(face_indices):
+                recognition_pipeline.update_track_result(
+                    session_key,
+                    track_ids[face_idx],
+                    bboxes[face_idx],
+                    results[r_idx] if r_idx < len(results) else None,
+                    now_ts
+                )
+
+        # Use cached result for largest face if embedding not run
+        largest_index = faces.index(face)
+        track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
+        result = None
+        if track_for_largest and track_for_largest.last_result:
+            result = track_for_largest.last_result
+        elif embeddings_to_search:
+            # If embedding ran for largest face but result wasn't cached yet
+            if largest_index in face_indices:
+                result = results[face_indices.index(largest_index)] if results else None
         
         if result and result['confidence'] >= 0.65:
             return RecognitionResponse(
@@ -207,110 +253,6 @@ async def recognize_face(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================
-# BATCH RECOGNITION
-# ==========================
-@app.post("/recognize/batch", response_model=BatchRecognitionResponse)
-async def recognize_faces_batch(files: List[UploadFile] = File(...)):
-    """
-    Recognize multiple faces in batch for optimal GPU utilization
-    
-    Args:
-        files: List of image files containing faces
-        
-    Returns:
-        Batch recognition results with processing time
-    """
-    import time
-    start_time = time.time()
-    
-    try:
-        if len(files) > 32:
-            raise HTTPException(
-                status_code=400,
-                detail="Maximum 32 images per batch"
-            )
-        
-        # Decode all images in parallel
-        async def decode_image(file: UploadFile):
-            contents = await file.read()
-            nparr = np.frombuffer(contents, np.uint8)
-            return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        images = await asyncio.gather(*[decode_image(f) for f in files])
-        
-        # Filter invalid images
-        valid_images = [(i, img) for i, img in enumerate(images) if img is not None]
-        
-        if not valid_images:
-            raise HTTPException(status_code=400, detail="No valid images provided")
-        
-        indices, valid_imgs = zip(*valid_images)
-        
-        # Process batch on GPU
-        loop = asyncio.get_event_loop()
-        batch_results = await loop.run_in_executor(
-            executor,
-            face_processor.process_images_batch,
-            list(valid_imgs),
-            True  # check_quality
-        )
-        
-        # Build responses
-        results = []
-        result_idx = 0
-        
-        for i in range(len(files)):
-            if i not in indices:
-                results.append(RecognitionResponse(
-                    name=None,
-                    confidence=0.0,
-                    is_recognized=False,
-                    message="Invalid image format"
-                ))
-            else:
-                success, embedding, message = batch_results[result_idx]
-                result_idx += 1
-                
-                if not success:
-                    results.append(RecognitionResponse(
-                        name=None,
-                        confidence=0.0,
-                        is_recognized=False,
-                        message=message
-                    ))
-                else:
-                    # Search in Milvus
-                    result = milvus_client.search_face(embedding)
-                    
-                    if result and result['confidence'] >= 0.65:
-                        results.append(RecognitionResponse(
-                            name=result['name'],
-                            confidence=result['confidence'],
-                            is_recognized=True,
-                            message="Face recognized successfully"
-                        ))
-                    else:
-                        results.append(RecognitionResponse(
-                            name=None,
-                            confidence=result['confidence'] if result else 0.0,
-                            is_recognized=False,
-                            message="Unknown face"
-                        ))
-        
-        processing_time = (time.time() - start_time) * 1000
-        
-        return BatchRecognitionResponse(
-            results=results,
-            processing_time_ms=round(processing_time, 2)
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Batch recognition error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================
 # ENROLLMENT
 # ==========================
 @app.post("/enroll", response_model=EnrollmentResponse)
@@ -319,7 +261,7 @@ async def enroll_person(
     files: List[UploadFile] = File(...)
 ):
     """
-    Enroll a new person with multiple face images (GPU-optimized batch processing)
+    Enroll a new person with multiple face images
     
     Args:
         name: Person's name
@@ -335,35 +277,32 @@ async def enroll_person(
                 detail="At least 3 images required for enrollment"
             )
         
-        # Decode all images in parallel
-        async def decode_image(file: UploadFile):
+        embeddings = []
+        
+        for file in files:
+            # Read and decode image
             contents = await file.read()
             nparr = np.frombuffer(contents, np.uint8)
-            return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        images = await asyncio.gather(*[decode_image(f) for f in files])
-        valid_images = [img for img in images if img is not None]
-        
-        if len(valid_images) < 3:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Only {len(valid_images)} valid images. Need at least 3."
-            )
-        
-        # Batch process on GPU
-        loop = asyncio.get_event_loop()
-        batch_results = await loop.run_in_executor(
-            executor,
-            face_processor.process_images_batch,
-            valid_images,
-            True  # check_quality
-        )
-        
-        # Extract valid embeddings
-        embeddings = []
-        for success, embedding, message in batch_results:
-            if success:
-                embeddings.append(embedding)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                continue
+            
+            # Process face
+            faces = face_processor.detect_faces(image)
+            
+            if not faces:
+                continue
+            
+            face = face_processor.select_largest_face(faces)
+            
+            # Check quality
+            if face_processor.has_occlusion(face):
+                continue
+            
+            # Get embedding
+            embedding = face_processor.get_embedding(face)
+            embeddings.append(embedding)
         
         if len(embeddings) < 3:
             raise HTTPException(
@@ -392,6 +331,150 @@ async def enroll_person(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================
+# WEBSOCKET FOR STREAMING
+# ==========================
+@app.websocket("/ws/recognize")
+async def websocket_recognize(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time face recognition streaming
+    Receives base64 encoded images and returns recognition results
+    """
+    await websocket.accept()
+    logger.info(f"WebSocket client connected")
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("type") == "recognize":
+                try:
+                    # Decode base64 image
+                    image_data = message.get("image", "")
+                    if not image_data:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "No image data provided"
+                        })
+                        continue
+                    
+                    # Remove base64 header if present
+                    if "base64," in image_data:
+                        image_data = image_data.split("base64,")[1]
+                    
+                    # Decode image
+                    image_bytes = base64.b64decode(image_data)
+                    nparr = np.frombuffer(image_bytes, np.uint8)
+                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    
+                    if image is None:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Invalid image format"
+                        })
+                        continue
+                    
+                    # Process face (GPU accelerated)
+                    faces = face_processor.detect_faces(image)
+                    
+                    if not faces:
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": None,
+                            "confidence": 0.0,
+                            "is_recognized": False,
+                            "message": "No face detected"
+                        })
+                        continue
+                    
+                    # Use largest face
+                    face = face_processor.select_largest_face(faces)
+                    
+                    # Check occlusion
+                    if face_processor.has_occlusion(face):
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": None,
+                            "confidence": 0.0,
+                            "is_recognized": False,
+                            "message": "Face is occluded"
+                        })
+                        continue
+                    
+                    # Tracking + gating + batch search
+                    now_ts = time.time()
+                    session_key = f"ws:{id(websocket)}"
+
+                    bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
+                    track_ids = recognition_pipeline.update_tracks(session_key, bboxes, now=now_ts)
+
+                    embeddings_to_search = []
+                    face_indices = []
+
+                    for idx, f in enumerate(faces):
+                        track = recognition_pipeline.get_track(session_key, track_ids[idx])
+                        if recognition_pipeline.should_embed(track, bboxes[idx], now_ts):
+                            embeddings_to_search.append(face_processor.get_embedding(f))
+                            face_indices.append(idx)
+
+                    results = []
+                    if embeddings_to_search:
+                        results = milvus_client.search_faces(embeddings_to_search)
+                        for r_idx, face_idx in enumerate(face_indices):
+                            recognition_pipeline.update_track_result(
+                                session_key,
+                                track_ids[face_idx],
+                                bboxes[face_idx],
+                                results[r_idx] if r_idx < len(results) else None,
+                                now_ts
+                            )
+
+                    largest_index = faces.index(face)
+                    track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
+                    result = None
+                    if track_for_largest and track_for_largest.last_result:
+                        result = track_for_largest.last_result
+                    elif embeddings_to_search and largest_index in face_indices:
+                        result = results[face_indices.index(largest_index)] if results else None
+                    
+                    if result and result['confidence'] >= 0.65:
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": result['name'],
+                            "confidence": float(result['confidence']),
+                            "is_recognized": True,
+                            "message": "Face recognized"
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": None,
+                            "confidence": float(result['confidence']) if result else 0.0,
+                            "is_recognized": False,
+                            "message": "Unknown face"
+                        })
+                
+                except Exception as e:
+                    logger.error(f"Recognition error in WebSocket: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(e)
+                    })
+            
+            elif message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        try:
+            await websocket.close()
+        except:
+            pass
+
+# ==========================
 # COLLECTION MANAGEMENT
 # ==========================
 @app.get("/collection/stats")
@@ -415,33 +498,6 @@ async def delete_person(person_id: str):
             raise HTTPException(status_code=404, detail="Person not found")
     except Exception as e:
         logger.error(f"Delete error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================
-# GPU MANAGEMENT
-# ==========================
-@app.post("/gpu/clear-cache")
-async def clear_gpu_cache():
-    """Clear GPU cache to free memory"""
-    try:
-        if face_processor:
-            face_processor.clear_gpu_cache()
-            return {"success": True, "message": "GPU cache cleared"}
-        return {"success": False, "message": "Face processor not initialized"}
-    except Exception as e:
-        logger.error(f"GPU clear error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/gpu/stats")
-async def get_gpu_stats():
-    """Get GPU memory statistics"""
-    try:
-        if face_processor and face_processor.is_gpu_available():
-            stats = face_processor.get_gpu_memory_info()
-            return JSONResponse(content=stats)
-        return {"available": False, "message": "GPU not available"}
-    except Exception as e:
-        logger.error(f"GPU stats error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================
