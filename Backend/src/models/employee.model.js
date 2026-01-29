@@ -1,6 +1,9 @@
 const pool = require('../DB/config');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
+const FormData = require('form-data');
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
 const REQUIRED_FIELDS = ['first_name', 'last_name', 'email'];
 const UPDATABLE_FIELDS = [
@@ -17,37 +20,72 @@ const UPDATABLE_FIELDS = [
 ];
 
 /**
- * Register face encoding with the Python face recognition system.
- * @param {string} name - Employee name (first_name + last_name)
- * @returns {Promise<number>} - Returns 0 for success, 1 for failure
+ * Call ML service /enroll endpoint.
  */
-const registerFaceEncoding = async (name) => {
+const enrollFace = async (req, res) => {
 	try {
-		// Call enroll script to enroll a new face
-		const registerFace = path.join(__dirname, '../../../modelling/arc_face/arcface_enroll.py');
-		const { exec } = require('child_process');
+		const { name } = req.body;
+		if (!name) {
+			return res.status(400).json({ message: 'Name is required for enrollment' });
+		}
+		if (!req.files || !req.files.length) {
+			return res.status(400).json({ message: 'At least one image file is required' });
+		}
 
-		const exitCode = await new Promise((resolve, reject) => {
-			exec(`python "${registerFace}" "${name}"`, (error, stdout, stderr) => {
-				// Log the output
-				if (stdout) console.log('[INFO] Face encoding response:', stdout);
-				if (stderr) console.log('[INFO] Python stderr:', stderr);
-
-				if (error) {
-					// Return the exit code from the error
-					console.error('[ERROR] Face encoding failed with exit code:', error.code);
-					resolve(error.code || 1);
-				} else {
-					// Success
-					resolve(0);
-				}
-			});
+		const form = new FormData();
+		form.append('name', name);
+		req.files.forEach((file) => {
+			form.append('files', fs.createReadStream(file.path), file.originalname);
 		});
 
-		return exitCode;
+		const { data } = await axios.post(`${ML_SERVICE_URL}/enroll`, form, {
+			headers: form.getHeaders(),
+			timeout: 30000,
+		});
+
+		return res.status(200).json({
+			success: true,
+			message: data.message || `Enrolled ${name} successfully`,
+			person_id: data.person_id || null,
+		});
 	} catch (error) {
-		console.error('[ERROR] Error registering face encoding:', error.message);
-		return 1; // Return failure code
+		const status = error.response?.status || 500;
+		const detail = error.response?.data || { message: 'Enrollment failed' };
+		console.error('[ERROR] Enrollment error:', detail);
+		return res.status(status).json(detail);
+	}
+};
+
+/**
+ * Call ML service /recognize endpoint.
+ */
+const recognizeFace = async (req, res) => {
+	try {
+		if (!req.file) {
+			return res.status(400).json({ message: 'Image file is required' });
+		}
+
+		const form = new FormData();
+		form.append('file', fs.createReadStream(req.file.path), req.file.originalname);
+
+		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
+			headers: form.getHeaders(),
+			timeout: 20000,
+		});
+
+		return res.status(200).json({
+			message: data.name
+				? `Recognized ${data.name}`
+				: 'Unknown face',
+			name: data.name || null,
+			confidence: data.confidence ?? null,
+			is_recognized: Boolean(data.is_recognized),
+		});
+	} catch (error) {
+		const status = error.response?.status || 500;
+		const detail = error.response?.data || { message: 'Recognition failed' };
+		console.error('[ERROR] Recognition error:', detail);
+		return res.status(status).json(detail);
 	}
 };
 
@@ -74,21 +112,7 @@ const createEmployee = async (req, res) => {
 			is_active,
 		} = req.body;
 
-		// First, attempt face enrollment
-		const fullName = `${first_name} ${last_name}`;
-		console.log(`[INFO] Starting face enrollment for ${fullName}`);
-		
-		const enrollmentStatus = await registerFaceEncoding(fullName);
-		
-		if (enrollmentStatus !== 0) {
-			console.error(`[ERROR] Face enrollment failed for ${fullName}`);
-			return res.status(400).json({ 
-				message: 'Face enrollment failed. Please ensure the employee image is in the known_faces_arc directory and try again.',
-				error: 'FACE_ENROLLMENT_FAILED'
-			});
-		}
-
-		console.log(`[INFO] Face enrollment successful for ${fullName}. Proceeding with database insert.`);
+		// Face enrollment now handled via /api/enroll endpoint; proceed with DB insert only.
 
 		// Only insert into database if face enrollment succeeds
 		const insertQuery = `
@@ -239,4 +263,6 @@ module.exports = {
 	getEmployeeById,
 	updateEmployee,
 	deleteEmployee,
+	enrollFace,
+	recognizeFace,
 };
