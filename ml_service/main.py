@@ -12,9 +12,11 @@ import cv2
 import logging
 import json
 import base64
+import time
 from pathlib import Path
 
 from inference.face_processor import FaceProcessor
+from inference.recognition_pipeline import RecognitionPipeline
 from embeddings.embedding_manager import EmbeddingManager
 from milvus_client.client import MilvusClient
 
@@ -45,6 +47,7 @@ app.add_middleware(
 face_processor = None
 embedding_manager = None
 milvus_client = None
+recognition_pipeline = None
 
 # Pydantic models
 class RecognitionResponse(BaseModel):
@@ -65,6 +68,7 @@ class HealthResponse(BaseModel):
     status: str
     gpu_available: bool
     milvus_connected: bool
+    runtime_providers: Optional[dict] = None
 
 # ==========================
 # STARTUP & SHUTDOWN
@@ -72,7 +76,7 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Initialize ML models and connections on startup"""
-    global face_processor, embedding_manager, milvus_client
+    global face_processor, embedding_manager, milvus_client, recognition_pipeline
     
     logger.info("="*60)
     logger.info("Starting ML Service...")
@@ -91,6 +95,10 @@ async def startup_event():
         # Initialize Embedding Manager
         logger.info("Initializing Embedding Manager...")
         embedding_manager = EmbeddingManager()
+
+        # Initialize Recognition Pipeline (tracking + gating + batching)
+        logger.info("Initializing Recognition Pipeline...")
+        recognition_pipeline = RecognitionPipeline()
         
         # Initialize Milvus Client
         logger.info("Connecting to Milvus Vector Database...")
@@ -124,7 +132,8 @@ async def health_check():
     return {
         "status": "healthy",
         "gpu_available": face_processor.is_gpu_available() if face_processor else False,
-        "milvus_connected": milvus_client.is_connected() if milvus_client else False
+        "milvus_connected": milvus_client.is_connected() if milvus_client else False,
+        "runtime_providers": face_processor.get_runtime_providers() if face_processor else None
     }
 
 @app.get("/")
@@ -140,7 +149,10 @@ async def root():
 # RECOGNITION
 # ==========================
 @app.post("/recognize", response_model=RecognitionResponse)
-async def recognize_face(file: UploadFile = File(...)):
+async def recognize_face(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(None)
+):
     """
     Recognize a face from an uploaded image
     
@@ -182,11 +194,44 @@ async def recognize_face(file: UploadFile = File(...)):
                 message="Face is occluded (mask/obstruction detected)"
             )
         
-        # Get embedding
-        embedding = face_processor.get_embedding(face)
-        
-        # Search in Milvus
-        result = milvus_client.search_face(embedding)
+        # Tracking + gating + batching
+        now_ts = time.time()
+        session_key = session_id or "default"
+
+        bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
+        track_ids = recognition_pipeline.update_tracks(session_key, bboxes, now=now_ts)
+
+        embeddings_to_search = []
+        face_indices = []
+
+        for idx, f in enumerate(faces):
+            track = recognition_pipeline.get_track(session_key, track_ids[idx])
+            if recognition_pipeline.should_embed(track, bboxes[idx], now_ts):
+                embeddings_to_search.append(face_processor.get_embedding(f))
+                face_indices.append(idx)
+
+        results = []
+        if embeddings_to_search:
+            results = milvus_client.search_faces(embeddings_to_search)
+            for r_idx, face_idx in enumerate(face_indices):
+                recognition_pipeline.update_track_result(
+                    session_key,
+                    track_ids[face_idx],
+                    bboxes[face_idx],
+                    results[r_idx] if r_idx < len(results) else None,
+                    now_ts
+                )
+
+        # Use cached result for largest face if embedding not run
+        largest_index = faces.index(face)
+        track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
+        result = None
+        if track_for_largest and track_for_largest.last_result:
+            result = track_for_largest.last_result
+        elif embeddings_to_search:
+            # If embedding ran for largest face but result wasn't cached yet
+            if largest_index in face_indices:
+                result = results[face_indices.index(largest_index)] if results else None
         
         if result and result['confidence'] >= 0.65:
             return RecognitionResponse(
@@ -357,11 +402,41 @@ async def websocket_recognize(websocket: WebSocket):
                         })
                         continue
                     
-                    # Get embedding (GPU accelerated)
-                    embedding = face_processor.get_embedding(face)
-                    
-                    # Search in Milvus
-                    result = milvus_client.search_face(embedding)
+                    # Tracking + gating + batch search
+                    now_ts = time.time()
+                    session_key = f"ws:{id(websocket)}"
+
+                    bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
+                    track_ids = recognition_pipeline.update_tracks(session_key, bboxes, now=now_ts)
+
+                    embeddings_to_search = []
+                    face_indices = []
+
+                    for idx, f in enumerate(faces):
+                        track = recognition_pipeline.get_track(session_key, track_ids[idx])
+                        if recognition_pipeline.should_embed(track, bboxes[idx], now_ts):
+                            embeddings_to_search.append(face_processor.get_embedding(f))
+                            face_indices.append(idx)
+
+                    results = []
+                    if embeddings_to_search:
+                        results = milvus_client.search_faces(embeddings_to_search)
+                        for r_idx, face_idx in enumerate(face_indices):
+                            recognition_pipeline.update_track_result(
+                                session_key,
+                                track_ids[face_idx],
+                                bboxes[face_idx],
+                                results[r_idx] if r_idx < len(results) else None,
+                                now_ts
+                            )
+
+                    largest_index = faces.index(face)
+                    track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
+                    result = None
+                    if track_for_largest and track_for_largest.last_result:
+                        result = track_for_largest.last_result
+                    elif embeddings_to_search and largest_index in face_indices:
+                        result = results[face_indices.index(largest_index)] if results else None
                     
                     if result and result['confidence'] >= 0.65:
                         await websocket.send_json({

@@ -74,12 +74,40 @@ class FaceProcessor:
         # Prepare with GPU context (ctx_id=0 is GPU 0)
         ctx_id = 0 if self.device == "cuda" else -1
         self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+
+        # Log actual runtime providers to verify GPU execution
+        providers_info = self.get_runtime_providers()
+        if providers_info:
+            logger.info(f"Runtime providers: {providers_info}")
+        else:
+            logger.warning("Could not determine runtime providers from InsightFace models")
         
         logger.info(f"FaceProcessor initialized successfully on {self.device.upper()}")
     
     def is_gpu_available(self) -> bool:
         """Check if GPU is available"""
         return self.device == "cuda"
+
+    def get_runtime_providers(self) -> dict:
+        """
+        Get ONNX Runtime providers used by InsightFace models.
+
+        Returns:
+            Dict of model name -> list of providers
+        """
+        providers = {}
+        try:
+            if hasattr(self.app, "models") and isinstance(self.app.models, dict):
+                for name, model in self.app.models.items():
+                    if hasattr(model, "sess") and model.sess is not None:
+                        try:
+                            providers[name] = model.sess.get_providers()
+                        except Exception as e:
+                            logger.warning(f"Failed to read providers for model {name}: {str(e)}")
+            return providers
+        except Exception as e:
+            logger.warning(f"Failed to collect runtime providers: {str(e)}")
+            return {}
     
     def detect_faces(self, image: np.ndarray) -> list:
         """

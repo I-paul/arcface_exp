@@ -2,6 +2,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const MIN_RECOGNITION_INTERVAL_MS = 250; // ~4 FPS throttle
 
 /**
  * Socket.IO handler for real-time face recognition and enrollment
@@ -17,6 +18,12 @@ module.exports = function socketHandler(io) {
      */
     socket.on('recognize-face', async (data) => {
       try {
+        const now = Date.now();
+        if (socket.lastRecognizeTs && (now - socket.lastRecognizeTs) < MIN_RECOGNITION_INTERVAL_MS) {
+          return; // throttle
+        }
+        socket.lastRecognizeTs = now;
+
         const { image } = data; // Base64 encoded image
 
         if (!image) {
@@ -34,6 +41,7 @@ module.exports = function socketHandler(io) {
           filename: 'frame.jpg',
           contentType: 'image/jpeg'
         });
+        form.append('session_id', socket.id);
 
         // Send to ML service
         const { data: result } = await axios.post(
