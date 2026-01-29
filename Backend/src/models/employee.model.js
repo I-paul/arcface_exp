@@ -4,6 +4,10 @@ const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const axios = require('axios');
+const FormData = require('form-data');
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+
 
 const REQUIRED_FIELDS = ['first_name', 'last_name', 'email'];
 const UPDATABLE_FIELDS = [
@@ -84,6 +88,25 @@ const recognizeFace = async (req, res) => {
 		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
 			headers: form.getHeaders(),
 			timeout: 20000,
+		// Call enroll script to enroll a new face
+		const registerFace = path.join(__dirname, '../../../modelling/arc_face/arcface_enroll.py');
+		const { exec } = require('child_process');
+
+		const exitCode = await new Promise((resolve, reject) => {
+			exec(`python "${registerFace}" "${name}"`, (error, stdout, stderr) => {
+				// Log the output
+				if (stdout) console.log('[INFO] Face encoding response:', stdout);
+				if (stderr) console.log('[INFO] Python stderr:', stderr);
+
+				if (error) {
+					// Return the exit code from the error
+					console.error('[ERROR] Face encoding failed with exit code:', error.code);
+					resolve(error.code || 1);
+				} else {
+					// Success
+					resolve(0);
+				}
+			});
 		});
 
 		return res.status(200).json({
@@ -110,6 +133,8 @@ const recognizeFace = async (req, res) => {
 				console.error(`[CLEANUP] Failed to delete ${fileToCleanup}:`, err.message);
 			}
 		}
+		console.error('[ERROR] Error registering face encoding:', error.message);
+		return 1; // Return failure code
 	}
 };
 

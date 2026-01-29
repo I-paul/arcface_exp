@@ -30,4 +30,5 @@ router.delete('/employee/:id', deleteEmployee);
 router.post('/enroll', upload.array('files', 5), enrollFace);
 router.post('/recognize', upload.single('file'), recognizeFace);
 
+
 module.exports = router;
