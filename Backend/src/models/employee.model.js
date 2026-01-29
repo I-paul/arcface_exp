@@ -1,8 +1,11 @@
 const pool = require('../DB/config');
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 const fs = require('fs');
 const path = require('path');
 =======
+=======
+>>>>>>> Stashed changes
 const axios = require('axios');
 const FormData = require('form-data');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
@@ -71,6 +74,9 @@ const registerFaceEncoding = async (name) => {
 		// Append file buffers directly to form data
 		files.forEach((file) => {
 			form.append('files', file.buffer, file.originalname);
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 		});
 
@@ -120,6 +126,9 @@ const recognizeFace = async (req, res) => {
 		const message = detail?.message || detail?.detail || 'Recognition failed';
 		console.error('[ERROR] Recognition error:', detail || message);
 		return res.status(status).json({ message, detail: detail?.detail });
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 	}
 };
