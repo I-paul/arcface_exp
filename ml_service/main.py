@@ -2,7 +2,7 @@
 ML Service API Entrypoint
 Face Recognition and Enrollment Service
 """
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -10,6 +10,8 @@ from typing import List, Optional
 import numpy as np
 import cv2
 import logging
+import json
+import base64
 from pathlib import Path
 
 from inference.face_processor import FaceProcessor
@@ -72,25 +74,38 @@ async def startup_event():
     """Initialize ML models and connections on startup"""
     global face_processor, embedding_manager, milvus_client
     
+    logger.info("="*60)
     logger.info("Starting ML Service...")
+    logger.info("="*60)
     
     try:
         # Initialize Face Processor (InsightFace)
-        logger.info("Initializing Face Processor...")
-        face_processor = FaceProcessor()
+        logger.info("Initializing Face Processor with GPU optimization...")
+        face_processor = FaceProcessor(force_gpu=True)  # Force GPU for production
+        
+        if face_processor.is_gpu_available():
+            logger.info("✓ GPU ENABLED - Recognition and Enrollment will run on GPU")
+        else:
+            logger.error("✗ GPU NOT AVAILABLE - Service may not start correctly")
         
         # Initialize Embedding Manager
         logger.info("Initializing Embedding Manager...")
         embedding_manager = EmbeddingManager()
         
         # Initialize Milvus Client
-        logger.info("Connecting to Milvus...")
+        logger.info("Connecting to Milvus Vector Database...")
         milvus_client = MilvusClient()
         
-        logger.info("ML Service started successfully!")
+        logger.info("="*60)
+        logger.info("✓ ML Service started successfully!")
+        logger.info(f"  - GPU Status: {'ENABLED' if face_processor.is_gpu_available() else 'DISABLED'}")
+        logger.info(f"  - Milvus Status: {'CONNECTED' if milvus_client.is_connected() else 'DISCONNECTED'}")
+        logger.info("="*60)
         
     except Exception as e:
-        logger.error(f"Failed to start ML Service: {str(e)}")
+        logger.error("="*60)
+        logger.error(f"✗ Failed to start ML Service: {str(e)}")
+        logger.error("="*60)
         raise
 
 @app.on_event("shutdown")
@@ -269,6 +284,120 @@ async def enroll_person(
     except Exception as e:
         logger.error(f"Enrollment error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================
+# WEBSOCKET FOR STREAMING
+# ==========================
+@app.websocket("/ws/recognize")
+async def websocket_recognize(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time face recognition streaming
+    Receives base64 encoded images and returns recognition results
+    """
+    await websocket.accept()
+    logger.info(f"WebSocket client connected")
+    
+    try:
+        while True:
+            # Receive message from client
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("type") == "recognize":
+                try:
+                    # Decode base64 image
+                    image_data = message.get("image", "")
+                    if not image_data:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "No image data provided"
+                        })
+                        continue
+                    
+                    # Remove base64 header if present
+                    if "base64," in image_data:
+                        image_data = image_data.split("base64,")[1]
+                    
+                    # Decode image
+                    image_bytes = base64.b64decode(image_data)
+                    nparr = np.frombuffer(image_bytes, np.uint8)
+                    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    
+                    if image is None:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Invalid image format"
+                        })
+                        continue
+                    
+                    # Process face (GPU accelerated)
+                    faces = face_processor.detect_faces(image)
+                    
+                    if not faces:
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": None,
+                            "confidence": 0.0,
+                            "is_recognized": False,
+                            "message": "No face detected"
+                        })
+                        continue
+                    
+                    # Use largest face
+                    face = face_processor.select_largest_face(faces)
+                    
+                    # Check occlusion
+                    if face_processor.has_occlusion(face):
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": None,
+                            "confidence": 0.0,
+                            "is_recognized": False,
+                            "message": "Face is occluded"
+                        })
+                        continue
+                    
+                    # Get embedding (GPU accelerated)
+                    embedding = face_processor.get_embedding(face)
+                    
+                    # Search in Milvus
+                    result = milvus_client.search_face(embedding)
+                    
+                    if result and result['confidence'] >= 0.65:
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": result['name'],
+                            "confidence": float(result['confidence']),
+                            "is_recognized": True,
+                            "message": "Face recognized"
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "result",
+                            "name": None,
+                            "confidence": float(result['confidence']) if result else 0.0,
+                            "is_recognized": False,
+                            "message": "Unknown face"
+                        })
+                
+                except Exception as e:
+                    logger.error(f"Recognition error in WebSocket: {str(e)}")
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": str(e)
+                    })
+            
+            elif message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+    
+    except WebSocketDisconnect:
+        logger.info("WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+        try:
+            await websocket.close()
+        except:
+            pass
 
 # ==========================
 # COLLECTION MANAGEMENT

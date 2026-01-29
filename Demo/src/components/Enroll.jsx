@@ -8,7 +8,7 @@ const steps = [
 ];
 
 const USE_IP_WEBCAM = false; // Set to true to use IP camera
-const IP_WEBCAM_URL = 'http://192.168.1.4:8080/video'; // Change to your IP webcam URL
+const IP_WEBCAM_URL = 'http://192.168.1.3:8080/video'; // Change to your IP webcam URL
 
 export default function Enroll() {
   const [name, setName] = useState('');
@@ -105,7 +105,7 @@ export default function Enroll() {
       captures.forEach((c, idx) => {
         form.append('files', c.blob, `capture-${idx + 1}.jpg`);
       });
-      const { data } = await axios.post('/api/enroll', form, {
+      const { data } = await axios.post('http://localhost:3000/api/enroll', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setMessage(data.message || 'Enrollment complete');

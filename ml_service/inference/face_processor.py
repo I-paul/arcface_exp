@@ -20,23 +20,49 @@ class FaceProcessor:
     EMBEDDING_DIM = 512
     OCCLUSION_THRESHOLD = 0.6
     
-    def __init__(self):
-        """Initialize InsightFace model with GPU support"""
+    def __init__(self, force_gpu: bool = True):
+        """Initialize InsightFace model with GPU support
+        
+        Args:
+            force_gpu: If True, raises exception if GPU is not available
+        """
         logger.info("Initializing FaceProcessor...")
         
         # Check GPU availability
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         logger.info(f"Using device: {self.device}")
         
+        # Force GPU for recognition and enrollment tasks
+        if force_gpu and self.device != "cuda":
+            raise RuntimeError(
+                "GPU is required for face recognition and enrollment tasks. "
+                "CUDA is not available. Please check your GPU setup and CUDA installation."
+            )
+        
         if self.device == "cuda":
             logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
             logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+            
+            # CUDA optimizations for better performance
+            torch.backends.cudnn.enabled = True
+            torch.backends.cudnn.benchmark = True
+            logger.info("CUDA optimizations enabled (cuDNN benchmark mode)")
         
-        # Configure ONNX Runtime providers
-        providers = [
-            "CUDAExecutionProvider",  # GPU - prioritized
-            "CPUExecutionProvider"    # CPU - fallback
-        ]
+        # Configure ONNX Runtime providers - GPU ONLY for production
+        if self.device == "cuda":
+            providers = [
+                ("CUDAExecutionProvider", {
+                    'device_id': 0,
+                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB limit
+                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                    'do_copy_in_default_stream': True,
+                })
+            ]
+            logger.info("Using CUDAExecutionProvider with optimized settings")
+        else:
+            providers = ["CPUExecutionProvider"]  # Fallback
+            logger.warning("Running on CPU - Performance will be degraded")
         
         # Initialize FaceAnalysis
         self.app = FaceAnalysis(
@@ -49,7 +75,7 @@ class FaceProcessor:
         ctx_id = 0 if self.device == "cuda" else -1
         self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
         
-        logger.info(f"FaceProcessor initialized successfully")
+        logger.info(f"FaceProcessor initialized successfully on {self.device.upper()}")
     
     def is_gpu_available(self) -> bool:
         """Check if GPU is available"""

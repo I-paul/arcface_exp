@@ -23,6 +23,7 @@ const UPDATABLE_FIELDS = [
  * Call ML service /enroll endpoint.
  */
 const enrollFace = async (req, res) => {
+	const filesToCleanup = (req.files || []).map((file) => file.path);
 	try {
 		const { name } = req.body;
 		if (!name) {
@@ -53,6 +54,17 @@ const enrollFace = async (req, res) => {
 		const detail = error.response?.data || { message: 'Enrollment failed' };
 		console.error('[ERROR] Enrollment error:', detail);
 		return res.status(status).json(detail);
+	} finally {
+		filesToCleanup.forEach((filePath) => {
+			try {
+				if (fs.existsSync(filePath)) {
+					fs.unlinkSync(filePath);
+					console.log(`[CLEANUP] Deleted temp file: ${filePath}`);
+				}
+			} catch (err) {
+				console.error(`[CLEANUP] Failed to delete ${filePath}:`, err.message);
+			}
+		});
 	}
 };
 
@@ -60,6 +72,7 @@ const enrollFace = async (req, res) => {
  * Call ML service /recognize endpoint.
  */
 const recognizeFace = async (req, res) => {
+	const fileToCleanup = req.file?.path || null;
 	try {
 		if (!req.file) {
 			return res.status(400).json({ message: 'Image file is required' });
@@ -86,6 +99,17 @@ const recognizeFace = async (req, res) => {
 		const detail = error.response?.data || { message: 'Recognition failed' };
 		console.error('[ERROR] Recognition error:', detail);
 		return res.status(status).json(detail);
+	} finally {
+		if (fileToCleanup) {
+			try {
+				if (fs.existsSync(fileToCleanup)) {
+					fs.unlinkSync(fileToCleanup);
+					console.log(`[CLEANUP] Deleted temp file: ${fileToCleanup}`);
+				}
+			} catch (err) {
+				console.error(`[CLEANUP] Failed to delete ${fileToCleanup}:`, err.message);
+			}
+		}
 	}
 };
 

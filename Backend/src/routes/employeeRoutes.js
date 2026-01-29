@@ -9,7 +9,12 @@ const {
 	recognizeFace,
 } = require('../models/employee.model');
 const multer = require('multer');
-const upload = multer({ dest: 'uploads/' });
+const os = require('os');
+const path = require('path');
+
+// Use OS temp directory for temporary file storage
+const tempDir = path.join(os.tmpdir(), 'face-recognition-temp');
+const upload = multer({ dest: tempDir });
 
 const router = express.Router();
 

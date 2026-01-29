@@ -12,3 +12,5 @@ venv/
 volumes/
 
 webcam_conn.py
+
+.env.example
