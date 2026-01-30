@@ -23,6 +23,8 @@ pillow>=9.0
 
 # Vector Database
 pymilvus==2.3.7
+marshmallow>=3.13.0
+environs>=9.5.0
 
 # Utilities
 pydantic==2.5.0
