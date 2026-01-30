@@ -3,7 +3,7 @@ import axios from 'axios';
 
 const POLL_MS = 1200;
 const USE_IP_WEBCAM = false; // Set to true to use IP camera
-const IP_WEBCAM_URL = 'http://192.168.x.x:8080/video'; // Change to your IP webcam URL
+const IP_WEBCAM_URL = 'http://192.168.1.3:8080/video'; // Change to your IP webcam URL
 
 export default function Recognize() {
   const videoRef = useRef(null);
@@ -57,7 +57,7 @@ export default function Recognize() {
         const blob = await new Promise((resolve) => frame.toBlob(resolve, 'image/jpeg', 0.9));
         const form = new FormData();
         form.append('file', blob, 'frame.jpg');
-        const { data } = await axios.post('/api/recognize', form, {
+        const { data } = await axios.post('http://localhost:3000/api/recognize', form, {
           headers: { 'Content-Type': 'multipart/form-data' },
         });
         setResult(data);

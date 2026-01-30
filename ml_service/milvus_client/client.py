@@ -226,6 +226,55 @@ class MilvusClient:
         except Exception as e:
             logger.error(f"Search failed: {str(e)}")
             raise
+
+    def search_faces(
+        self,
+        embeddings: List[np.ndarray],
+        top_k: int = 1
+    ) -> List[Optional[Dict]]:
+        """
+        Batch search for multiple face embeddings.
+
+        Args:
+            embeddings: List of embeddings
+            top_k: Number of results to return per embedding
+
+        Returns:
+            List of results, each item is a dict or None
+        """
+        if not embeddings:
+            return []
+
+        try:
+            search_params = {
+                "metric_type": self.METRIC_TYPE,
+                "params": {"nprobe": 10}
+            }
+
+            results = self.collection.search(
+                data=[emb.tolist() for emb in embeddings],
+                anns_field="embedding",
+                param=search_params,
+                limit=top_k,
+                output_fields=["name", "person_id"]
+            )
+
+            output = []
+            for res in results:
+                if not res or len(res) == 0:
+                    output.append(None)
+                    continue
+                top_result = res[0]
+                output.append({
+                    "name": top_result.entity.get("name"),
+                    "person_id": top_result.entity.get("person_id"),
+                    "confidence": float(top_result.distance)
+                })
+            return output
+
+        except Exception as e:
+            logger.error(f"Batch search failed: {str(e)}")
+            raise
     
     def delete_face(self, person_id: str) -> bool:
         """
