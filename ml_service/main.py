@@ -171,7 +171,7 @@ async def recognize_face(
         if image is None:
             raise HTTPException(status_code=400, detail="Invalid image format")
         
-        # Process face
+        # Detect faces (GPU)
         faces = face_processor.detect_faces(image)
         
         if not faces:
@@ -181,32 +181,40 @@ async def recognize_face(
                 is_recognized=False,
                 message="No face detected in image"
             )
-        
-        # Use the largest face
-        face = face_processor.select_largest_face(faces)
-        
-        # Check occlusion
-        if face_processor.has_occlusion(face):
+
+        # Preprocess faces (CPU) and keep only usable ones
+        usable_faces = []
+        usable_bboxes = []
+
+        for f in faces:
+            preprocess_result = face_processor.preprocess_face(image, f, mode="recognize")
+            if preprocess_result.usable:
+                usable_faces.append(f)
+                usable_bboxes.append((f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]))
+
+        if not usable_faces:
             return RecognitionResponse(
                 name=None,
                 confidence=0.0,
                 is_recognized=False,
-                message="Face is occluded (mask/obstruction detected)"
+                message="No usable face after preprocessing"
             )
-        
+
+        # Use the largest usable face
+        face = face_processor.select_largest_face(usable_faces)
+
         # Tracking + gating + batching
         now_ts = time.time()
         session_key = session_id or "default"
 
-        bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
-        track_ids = recognition_pipeline.update_tracks(session_key, bboxes, now=now_ts)
+        track_ids = recognition_pipeline.update_tracks(session_key, usable_bboxes, now=now_ts)
 
         embeddings_to_search = []
         face_indices = []
 
-        for idx, f in enumerate(faces):
+        for idx, f in enumerate(usable_faces):
             track = recognition_pipeline.get_track(session_key, track_ids[idx])
-            if recognition_pipeline.should_embed(track, bboxes[idx], now_ts):
+            if recognition_pipeline.should_embed(track, usable_bboxes[idx], now_ts):
                 embeddings_to_search.append(face_processor.get_embedding(f))
                 face_indices.append(idx)
 
@@ -217,13 +225,13 @@ async def recognize_face(
                 recognition_pipeline.update_track_result(
                     session_key,
                     track_ids[face_idx],
-                    bboxes[face_idx],
+                    usable_bboxes[face_idx],
                     results[r_idx] if r_idx < len(results) else None,
                     now_ts
                 )
 
         # Use cached result for largest face if embedding not run
-        largest_index = faces.index(face)
+        largest_index = usable_faces.index(face)
         track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
         result = None
         if track_for_largest and track_for_largest.last_result:
@@ -287,22 +295,12 @@ async def enroll_person(
             
             if image is None:
                 continue
-            
-            # Process face
-            faces = face_processor.detect_faces(image)
-            
-            if not faces:
+
+            # Preprocess + embed (strict enrollment profile)
+            result = face_processor.process_for_enrollment(image)
+            if not result.get("success"):
                 continue
-            
-            face = face_processor.select_largest_face(faces)
-            
-            # Check quality
-            if face_processor.has_occlusion(face):
-                continue
-            
-            # Get embedding
-            embedding = face_processor.get_embedding(face)
-            embeddings.append(embedding)
+            embeddings.append(result["embedding"])
         
         if len(embeddings) < 3:
             raise HTTPException(
@@ -375,7 +373,7 @@ async def websocket_recognize(websocket: WebSocket):
                         })
                         continue
                     
-                    # Process face (GPU accelerated)
+                    # Detect faces (GPU)
                     faces = face_processor.detect_faces(image)
                     
                     if not faces:
@@ -387,34 +385,42 @@ async def websocket_recognize(websocket: WebSocket):
                             "message": "No face detected"
                         })
                         continue
-                    
-                    # Use largest face
-                    face = face_processor.select_largest_face(faces)
-                    
-                    # Check occlusion
-                    if face_processor.has_occlusion(face):
+
+                    # Preprocess faces (CPU) and keep only usable ones
+                    usable_faces = []
+                    usable_bboxes = []
+
+                    for f in faces:
+                        preprocess_result = face_processor.preprocess_face(image, f, mode="recognize")
+                        if preprocess_result.usable:
+                            usable_faces.append(f)
+                            usable_bboxes.append((f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]))
+
+                    if not usable_faces:
                         await websocket.send_json({
                             "type": "result",
                             "name": None,
                             "confidence": 0.0,
                             "is_recognized": False,
-                            "message": "Face is occluded"
+                            "message": "No usable face after preprocessing"
                         })
                         continue
+
+                    # Use largest usable face
+                    face = face_processor.select_largest_face(usable_faces)
                     
                     # Tracking + gating + batch search
                     now_ts = time.time()
                     session_key = f"ws:{id(websocket)}"
 
-                    bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
-                    track_ids = recognition_pipeline.update_tracks(session_key, bboxes, now=now_ts)
+                    track_ids = recognition_pipeline.update_tracks(session_key, usable_bboxes, now=now_ts)
 
                     embeddings_to_search = []
                     face_indices = []
 
-                    for idx, f in enumerate(faces):
+                    for idx, f in enumerate(usable_faces):
                         track = recognition_pipeline.get_track(session_key, track_ids[idx])
-                        if recognition_pipeline.should_embed(track, bboxes[idx], now_ts):
+                        if recognition_pipeline.should_embed(track, usable_bboxes[idx], now_ts):
                             embeddings_to_search.append(face_processor.get_embedding(f))
                             face_indices.append(idx)
 
@@ -425,12 +431,12 @@ async def websocket_recognize(websocket: WebSocket):
                             recognition_pipeline.update_track_result(
                                 session_key,
                                 track_ids[face_idx],
-                                bboxes[face_idx],
+                                usable_bboxes[face_idx],
                                 results[r_idx] if r_idx < len(results) else None,
                                 now_ts
                             )
 
-                    largest_index = faces.index(face)
+                    largest_index = usable_faces.index(face)
                     track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
                     result = None
                     if track_for_largest and track_for_largest.last_result:
