@@ -26,18 +26,32 @@ def blur_score(face: np.ndarray) -> float:
     return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
-def brightness_score(face: np.ndarray) -> float:
+def mean_luminance(face: np.ndarray) -> float:
     """
-    Compute average brightness
+    Compute mean luminance (brightness)
     
     Args:
         face: Input face image
     
     Returns:
-        Mean brightness value (0-255)
+        Mean luminance value (0-255)
     """
     gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY) if len(face.shape) == 3 else face
     return float(np.mean(gray))
+
+
+def contrast_score(face: np.ndarray) -> float:
+    """
+    Compute contrast score (standard deviation of luminance)
+    
+    Args:
+        face: Input face image
+    
+    Returns:
+        Contrast score (std dev of luminance)
+    """
+    gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY) if len(face.shape) == 3 else face
+    return float(np.std(gray))
 
 
 def face_size_check(bbox: list, min_size: int) -> bool:
@@ -61,10 +75,38 @@ def face_size_check(bbox: list, min_size: int) -> bool:
     return min(width, height) >= min_size
 
 
+def face_area_ratio(bbox: list, image_shape: Optional[tuple]) -> float:
+    """
+    Compute face area ratio relative to the full image
+    
+    Args:
+        bbox: Bounding box [x1, y1, x2, y2]
+        image_shape: Full image shape (H, W, C)
+    
+    Returns:
+        Ratio of face area to full image area (0-1)
+    """
+    if image_shape is None or len(bbox) != 4:
+        return 0.0
+    
+    h, w = image_shape[:2]
+    if h <= 0 or w <= 0:
+        return 0.0
+    
+    x1, y1, x2, y2 = bbox
+    width = max(0.0, x2 - x1)
+    height = max(0.0, y2 - y1)
+    face_area = width * height
+    image_area = float(h * w)
+    
+    return float(face_area / image_area) if image_area > 0 else 0.0
+
+
 def check_quality(
     face: np.ndarray,
     bbox: list,
-    profile: Dict[str, float]
+    profile: Dict[str, float],
+    image_shape: Optional[tuple] = None
 ) -> Tuple[bool, Dict[str, float], Optional[str]]:
     """
     Check if face meets quality requirements
@@ -86,19 +128,25 @@ def check_quality(
     metrics = {}
     
     # Compute all metrics
-    metrics["blur"] = blur_score(face)
-    metrics["brightness"] = brightness_score(face)
+    metrics["blur_score"] = blur_score(face)
+    metrics["mean_luminance"] = mean_luminance(face)
+    metrics["face_area_ratio"] = face_area_ratio(bbox, image_shape)
+    metrics["contrast"] = contrast_score(face)
+
+    # Backward-compatible metric keys
+    metrics["blur"] = metrics["blur_score"]
+    metrics["brightness"] = metrics["mean_luminance"]
     
     # Check blur
-    if metrics["blur"] < profile["blur_min"]:
+    if metrics["blur_score"] < profile["blur_min"]:
         return False, metrics, errors.BLUR_TOO_HIGH
     
     # Check brightness
-    if metrics["brightness"] < profile["brightness_min"]:
-        return False, metrics, errors.LOW_BRIGHTNESS
+    if metrics["mean_luminance"] < profile["brightness_min"]:
+        return False, metrics, errors.LOW_LIGHT
     
-    if metrics["brightness"] > profile["brightness_max"]:
-        return False, metrics, errors.HIGH_BRIGHTNESS
+    if metrics["mean_luminance"] > profile["brightness_max"]:
+        return False, metrics, errors.OVER_EXPOSED
     
     # Check face size
     if not face_size_check(bbox, profile["face_min_size"]):

@@ -4,7 +4,9 @@ Normalization for ArcFace model compatibility
 Ensures embedding distribution stability and model-agnostic preprocessing.
 """
 
+import cv2
 import numpy as np
+from .config import FACE_SIZE
 
 
 def to_arcface_tensor(face: np.ndarray) -> np.ndarray:
@@ -24,6 +26,11 @@ def to_arcface_tensor(face: np.ndarray) -> np.ndarray:
     Returns:
         Normalized tensor of shape (1, C, H, W) ready for model inference
     """
+    # Ensure target size (112x112)
+    target_w, target_h = FACE_SIZE
+    if face.shape[1] != target_w or face.shape[0] != target_h:
+        face = cv2.resize(face, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
     # BGR to RGB
     face = face[:, :, ::-1]
     

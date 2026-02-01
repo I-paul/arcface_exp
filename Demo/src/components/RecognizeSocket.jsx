@@ -14,7 +14,7 @@ export default function RecognizeSocket() {
   const [mlServiceStatus, setMlServiceStatus] = useState(null);
   const [isRecognizing, setIsRecognizing] = useState(false);
   const [useIpWebcam, setUseIpWebcam] = useState(false);
-  const [ipUrl, setIpUrl] = useState('http://10.1.31.201:8080/video');
+  const [ipUrl, setIpUrl] = useState('http://192.168.1.3:8080/video');
 
   // Initialize Socket.IO connection
   useEffect(() => {

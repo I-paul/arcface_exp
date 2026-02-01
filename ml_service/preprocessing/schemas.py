@@ -30,28 +30,44 @@ class PreprocessRequest:
 
 
 @dataclass
-class PreprocessResponse:
+class PreprocessResult:
     """
-    Output schema for face preprocessing
+    Output schema for face preprocessing (canonical contract)
     
     Attributes:
         usable: Whether the face passed all quality checks
         face_tensor: Preprocessed face tensor ready for embedding model (None if not usable)
-        quality_metrics: Dictionary of computed quality scores
-        flags: Dictionary of processing flags (what operations were applied)
         reject_reason: Reason for rejection if not usable (None if usable)
+        quality_metrics: Dictionary of computed quality scores
     """
     usable: bool
     face_tensor: Optional[np.ndarray]
-    quality_metrics: Dict[str, float]
-    flags: Dict[str, bool]
     reject_reason: Optional[str]
+    quality_metrics: Dict[str, float]
+
+
+@dataclass
+class PreprocessResponse(PreprocessResult):
+    """
+    Output schema for face preprocessing (extended, backward-compatible)
+    
+    Attributes:
+        flags: Dictionary of processing flags (what operations were applied)
+    """
+    flags: Dict[str, bool]
     
     def to_dict(self):
         """Convert to dictionary for JSON serialization"""
+        if self.face_tensor is None:
+            face_tensor = None
+        elif hasattr(self.face_tensor, "detach"):
+            face_tensor = self.face_tensor.detach().cpu().numpy().tolist()
+        else:
+            face_tensor = self.face_tensor.tolist()
+
         return {
             "usable": self.usable,
-            "face_tensor": self.face_tensor.tolist() if self.face_tensor is not None else None,
+            "face_tensor": face_tensor,
             "quality_metrics": self.quality_metrics,
             "flags": self.flags,
             "reject_reason": self.reject_reason,
