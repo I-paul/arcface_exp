@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
+const faceQueue = require('../queues/face.queue');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
 
@@ -73,44 +74,22 @@ const enrollFace = async (req, res) => {
  * Call ML service /recognize endpoint.
  */
 const recognizeFace = async (req, res) => {
-	const fileToCleanup = req.file?.path || null;
 	try {
 		if (!req.file) {
 			return res.status(400).json({ message: 'Image file is required' });
 		}
 
-		const form = new FormData();
-		form.append('file', fs.createReadStream(req.file.path), req.file.originalname);
-
-		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
-			headers: form.getHeaders(),
-			timeout: 20000,
+		await faceQueue.add('recognize', {
+			imagePath: req.file.path,
+			originalName: req.file.originalname,
 		});
 
-		return res.status(200).json({
-			message: data.name
-				? `Recognized ${data.name}`
-				: 'Unknown face',
-			name: data.name || null,
-			confidence: data.confidence ?? null,
-			is_recognized: Boolean(data.is_recognized),
+		return res.status(202).json({
+			message: 'Recognition request queued',
 		});
 	} catch (error) {
-		const status = error.response?.status || 500;
-		const detail = error.response?.data || { message: 'Recognition failed' };
-		console.error('[ERROR] Recognition error:', detail);
-		return res.status(status).json(detail);
-	} finally {
-		if (fileToCleanup) {
-			try {
-				if (fs.existsSync(fileToCleanup)) {
-					fs.unlinkSync(fileToCleanup);
-					console.log(`[CLEANUP] Deleted temp file: ${fileToCleanup}`);
-				}
-			} catch (err) {
-				console.error(`[CLEANUP] Failed to delete ${fileToCleanup}:`, err.message);
-			}
-		}
+		console.error('[ERROR] Recognition queueing error:', error.message || error);
+		return res.status(500).json({ message: 'Recognition failed' });
 	}
 };
 

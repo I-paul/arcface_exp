@@ -3,12 +3,14 @@ import Enroll from './components/Enroll';
 import Recognize from './components/Recognize';
 import EnrollSocket from './components/EnrollSocket';
 import RecognizeSocket from './components/RecognizeSocket';
+import MultiCamQueueTest from './components/MultiCamQueueTest';
 
 const NAV = {
   ENROLL: 'enroll',
   RECOGNIZE: 'recognize',
   ENROLL_SOCKET: 'enroll-socket',
   RECOGNIZE_SOCKET: 'recognize-socket',
+  MULTI_CAM: 'multi-cam',
 };
 
 export default function App() {
@@ -19,6 +21,12 @@ export default function App() {
       <header className="topbar">
         <h1>Face Recognition System</h1>
         <nav className="nav">
+          <button
+            className={tab === NAV.MULTI_CAM ? 'active' : ''}
+            onClick={() => setTab(NAV.MULTI_CAM)}
+          >
+            🧪 Multi-Cam Queue Test
+          </button>
           <button
             className={tab === NAV.RECOGNIZE_SOCKET ? 'active' : ''}
             onClick={() => setTab(NAV.RECOGNIZE_SOCKET)}
@@ -47,6 +55,7 @@ export default function App() {
       </header>
 
       <main className="content">
+        {tab === NAV.MULTI_CAM && <MultiCamQueueTest />}
         {tab === NAV.ENROLL && <Enroll />}
         {tab === NAV.RECOGNIZE && <Recognize />}
         {tab === NAV.ENROLL_SOCKET && <EnrollSocket />}
