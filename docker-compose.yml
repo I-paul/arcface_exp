@@ -1,9 +1,52 @@
-version: "3.9"
-
 services:
 
+  # ============================================
+  # ETCD - Milvus Metadata Storage
+  # ============================================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: milvus-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - app-network
+
+  # ============================================
+  # MINIO - Milvus Object Storage
+  # ============================================
+  minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: milvus-minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - app-network
+
+  # ============================================
+  # MILVUS - Vector Database
+  # ============================================
   milvus:
-    image: milvusdb/milvus:v2.3.4
+    image: milvusdb/milvus:v2.4.0
     container_name: milvus
     command: ["milvus", "run", "standalone"]
     ports:
@@ -11,36 +54,155 @@ services:
       - "9091:9091"
     volumes:
       - milvus_data:/var/lib/milvus
+    environment:
+      - ETCD_ENDPOINTS=etcd:2379
+      - MINIO_ADDRESS=minio:9000
+      - COMMON_LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+    depends_on:
+      - etcd
+      - minio
+    networks:
+      - app-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
 
-  backend:
-    build: ./Backend
-    container_name: backend
+  # ============================================
+  # ATTU - Milvus GUI
+  # ============================================
+  attu:
+    image: ghcr.io/zilliztech/attu:latest
+    container_name: milvus-attu
     ports:
-      - "3000:3000"
-    env_file:
-      - backend/.env
-    volumes:
-      - ./Backend:/app
+      - "8888:3000"
+    environment:
+      - MILVUS_URL=milvus:19530
+    networks:
+      - app-network
     depends_on:
       - milvus
-      - ml_service
 
+  # ============================================
+  # REDIS - Job Queue
+  # ============================================
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - app-network
+    command: redis-server --appendonly yes
+
+  # ============================================
+  # ML SERVICE - Face Recognition API
+  # ============================================
   ml_service:
     build: ./ml_service
     container_name: ml_service
     ports:
       - "8000:8000"
     env_file:
-      - ml_service/.env
+      - .env.ml_service
     volumes:
       - ./ml_service:/app
+    depends_on:
+      milvus:
+        condition: service_healthy
+    networks:
+      - app-network
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MILVUS_HOST=milvus
+      - MILVUS_PORT=19530
     deploy:
       resources:
         reservations:
           devices:
-            - capabilities: [gpu]
-    depends_on:
-      - milvus
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
+  # ============================================
+  # BACKEND - Express API Server
+  # ============================================
+  backend:
+    build: ./Backend
+    container_name: backend
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.backend
+    volumes:
+      - ./Backend:/app
+      - /app/node_modules
+    depends_on:
+      milvus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml_service:
+        condition: service_started
+    networks:
+      - app-network
+    environment:
+      - NODE_ENV=development
+      - ML_SERVICE_URL=http://ml_service:8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+  # ============================================
+  # WORKER - Face Recognition Queue Processor
+  # ============================================
+  worker:
+    build: ./Backend
+    container_name: face-worker
+    command: node src/workers/face.worker.js
+    env_file:
+      - .env.backend
+    volumes:
+      - ./Backend:/app
+      - /app/node_modules
+    depends_on:
+      redis:
+        condition: service_healthy
+      ml_service:
+        condition: service_started
+    networks:
+      - app-network
+    environment:
+      - NODE_ENV=development
+      - ML_SERVICE_URL=http://ml_service:8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+
+# ============================================
+# NETWORKS
+# ============================================
+networks:
+  app-network:
+    driver: bridge
+
+# ============================================
+# VOLUMES
+# ============================================
 volumes:
+  etcd_data:
+  minio_data:
   milvus_data:

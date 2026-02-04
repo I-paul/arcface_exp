@@ -13,21 +13,26 @@ module.exports = function socketHandler(io) {
     console.log(`[Socket.IO] Client connected: ${socket.id}`);
 
     /**
-     * Real-time face recognition
-     * Receives image data from frontend and sends to ML service
+     * Real-time face recognition with multi-camera support
+     * Receives image data from frontend with camera_id and sends to ML service
      */
     socket.on('recognize-face', async (data) => {
       try {
-        const now = Date.now();
-        if (socket.lastRecognizeTs && (now - socket.lastRecognizeTs) < MIN_RECOGNITION_INTERVAL_MS) {
-          return; // throttle
-        }
-        socket.lastRecognizeTs = now;
-
-        const { image } = data; // Base64 encoded image
+        const { image, camera_id } = data; // Base64 encoded image and camera identifier
 
         if (!image) {
-          socket.emit('recognition-error', { message: 'No image provided' });
+          socket.emit('recognition-error', { 
+            message: 'No image provided',
+            camera_id 
+          });
+          return;
+        }
+
+        if (!camera_id) {
+          socket.emit('recognition-error', { 
+            message: 'No camera_id provided',
+            camera_id: 'unknown'
+          });
           return;
         }
 
@@ -53,8 +58,9 @@ module.exports = function socketHandler(io) {
           }
         );
 
-        // Emit result back to client
+        // Emit result back to client with camera_id
         socket.emit('recognition-result', {
+          camera_id,
           name: result.name || null,
           confidence: result.confidence || 0,
           is_recognized: result.is_recognized || false,
@@ -64,7 +70,10 @@ module.exports = function socketHandler(io) {
       } catch (error) {
         console.error('[Socket.IO] Recognition error:', error.message);
         const errorMessage = error.response?.data?.detail || 'Recognition failed';
-        socket.emit('recognition-error', { message: errorMessage });
+        socket.emit('recognition-error', { 
+          message: errorMessage,
+          camera_id: data?.camera_id || 'unknown'
+        });
       }
     });
 

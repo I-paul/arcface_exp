@@ -1,20 +1,14 @@
 import React, { useState } from 'react';
-import Enroll from './components/Enroll';
-import Recognize from './components/Recognize';
+import MultiCamRecognition from './components/MultiCamRecognition';
 import EnrollSocket from './components/EnrollSocket';
-import RecognizeSocket from './components/RecognizeSocket';
-import MultiCamQueueTest from './components/MultiCamQueueTest';
 
 const NAV = {
+  RECOGNITION: 'recognition',
   ENROLL: 'enroll',
-  RECOGNIZE: 'recognize',
-  ENROLL_SOCKET: 'enroll-socket',
-  RECOGNIZE_SOCKET: 'recognize-socket',
-  MULTI_CAM: 'multi-cam',
 };
 
 export default function App() {
-  const [tab, setTab] = useState(NAV.RECOGNIZE_SOCKET);
+  const [tab, setTab] = useState(NAV.RECOGNITION);
 
   return (
     <div className="app">
@@ -22,44 +16,23 @@ export default function App() {
         <h1>Face Recognition System</h1>
         <nav className="nav">
           <button
-            className={tab === NAV.MULTI_CAM ? 'active' : ''}
-            onClick={() => setTab(NAV.MULTI_CAM)}
+            className={tab === NAV.RECOGNITION ? 'active' : ''}
+            onClick={() => setTab(NAV.RECOGNITION)}
           >
-            🧪 Multi-Cam Queue Test
-          </button>
-          <button
-            className={tab === NAV.RECOGNIZE_SOCKET ? 'active' : ''}
-            onClick={() => setTab(NAV.RECOGNIZE_SOCKET)}
-          >
-            🎥 Live Recognition
-          </button>
-          <button
-            className={tab === NAV.ENROLL_SOCKET ? 'active' : ''}
-            onClick={() => setTab(NAV.ENROLL_SOCKET)}
-          >
-            ➕ Enroll (Live)
-          </button>
-          <button
-            className={tab === NAV.RECOGNIZE ? 'active' : ''}
-            onClick={() => setTab(NAV.RECOGNIZE)}
-          >
-            Recognize (Legacy)
+            🎥 Live Multi-Camera Recognition
           </button>
           <button
             className={tab === NAV.ENROLL ? 'active' : ''}
             onClick={() => setTab(NAV.ENROLL)}
           >
-            Enroll (Legacy)
+            ➕ Face Enrollment
           </button>
         </nav>
       </header>
 
       <main className="content">
-        {tab === NAV.MULTI_CAM && <MultiCamQueueTest />}
-        {tab === NAV.ENROLL && <Enroll />}
-        {tab === NAV.RECOGNIZE && <Recognize />}
-        {tab === NAV.ENROLL_SOCKET && <EnrollSocket />}
-        {tab === NAV.RECOGNIZE_SOCKET && <RecognizeSocket />}
+        {tab === NAV.RECOGNITION && <MultiCamRecognition />}
+        {tab === NAV.ENROLL && <EnrollSocket />}
       </main>
     </div>
   );

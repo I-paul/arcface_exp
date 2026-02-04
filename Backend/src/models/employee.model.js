@@ -3,7 +3,6 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
-const faceQueue = require('../queues/face.queue');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
 
@@ -79,17 +78,38 @@ const recognizeFace = async (req, res) => {
 			return res.status(400).json({ message: 'Image file is required' });
 		}
 
-		await faceQueue.add('recognize', {
-			imagePath: req.file.path,
-			originalName: req.file.originalname,
+		const form = new FormData();
+		form.append('file', fs.createReadStream(req.file.path), req.file.originalname);
+
+		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
+			headers: form.getHeaders(),
+			timeout: 20000,
 		});
 
-		return res.status(202).json({
-			message: 'Recognition request queued',
-		});
+		// Cleanup temp file
+		try {
+			if (fs.existsSync(req.file.path)) {
+				fs.unlinkSync(req.file.path);
+			}
+		} catch (cleanupErr) {
+			console.error('[CLEANUP] Failed to delete temp file:', cleanupErr.message);
+		}
+
+		return res.status(200).json(data);
 	} catch (error) {
-		console.error('[ERROR] Recognition queueing error:', error.message || error);
-		return res.status(500).json({ message: 'Recognition failed' });
+		// Cleanup temp file on error
+		try {
+			if (req.file && fs.existsSync(req.file.path)) {
+				fs.unlinkSync(req.file.path);
+			}
+		} catch (cleanupErr) {
+			console.error('[CLEANUP] Failed to delete temp file:', cleanupErr.message);
+		}
+
+		const status = error.response?.status || 500;
+		const detail = error.response?.data || { message: 'Recognition failed' };
+		console.error('[ERROR] Recognition error:', detail);
+		return res.status(status).json(detail);
 	}
 };
 

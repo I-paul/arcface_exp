@@ -2,36 +2,37 @@
 # ML SERVICE REQUIREMENTS
 # Face Recognition API Dependencies
 # ============================================
+--extra-index-url https://download.pytorch.org/whl/cu121
 
 # Web Framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.6
 
-# Deep Learning & GPU
-torch>=2.0.0
-torchvision>=0.15.0
-onnxruntime-gpu>=1.15.0
+# Deep Learning & GPU (CUDA 12.1)
+torch>=2.1.0
+torchvision>=0.16.0
+onnxruntime-gpu>=1.16.0
 
 # Face Recognition
 insightface>=0.7.3
-opencv-python-headless>=4.8.0
+opencv-python-headless>=4.9.0
 
 # Data Processing
-numpy>=1.23.0,<2.0
-pillow>=9.0
+numpy>=1.24.0,<2.0
+pillow>=10.0.0
 
 # Vector Database
-pymilvus==2.3.7
-marshmallow>=3.13.0
-environs>=9.5.0
+pymilvus>=2.3.7
+marshmallow>=3.20.0
+environs>=10.0.0
 
 # Utilities
-pydantic==2.5.0
-python-dotenv==1.0.0
+pydantic>=2.5.0
+python-dotenv>=1.0.0
 
 # Monitoring & Logging
-python-json-logger==2.0.7
+python-json-logger>=2.0.7
 
 # HTTP Client (for health checks)
 requests>=2.31.0

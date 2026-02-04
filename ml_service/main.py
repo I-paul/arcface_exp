@@ -13,6 +13,7 @@ import logging
 import json
 import base64
 import time
+import traceback
 from pathlib import Path
 
 from inference.face_processor import FaceProcessor
@@ -163,6 +164,12 @@ async def recognize_face(
         Recognition result with name and confidence
     """
     try:
+        # Diagnostic snapshot of array-like locals (for pinpointing ambiguous truth-value errors)
+        logger.error("DEBUG TYPES SNAPSHOT:")
+        for name, val in locals().items():
+            if hasattr(val, "shape"):
+                logger.error(f"{name}: type={type(val)}, shape={val.shape}")
+
         # Read and decode image
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
@@ -200,8 +207,15 @@ async def recognize_face(
                 message="No usable face after preprocessing"
             )
 
-        # Use the largest usable face
-        face = face_processor.select_largest_face(usable_faces)
+        # Use the largest usable face (track index to avoid equality checks)
+        largest_index = None
+        largest_area = -1.0
+        for i, f in enumerate(usable_faces):
+            area = (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
+            if area > largest_area:
+                largest_area = area
+                largest_index = i
+        face = usable_faces[largest_index]
 
         # Tracking + gating + batching
         now_ts = time.time()
@@ -219,7 +233,7 @@ async def recognize_face(
                 face_indices.append(idx)
 
         results = []
-        if embeddings_to_search:
+        if len(embeddings_to_search) > 0:
             results = milvus_client.search_faces(embeddings_to_search)
             for r_idx, face_idx in enumerate(face_indices):
                 recognition_pipeline.update_track_result(
@@ -231,32 +245,32 @@ async def recognize_face(
                 )
 
         # Use cached result for largest face if embedding not run
-        largest_index = usable_faces.index(face)
         track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
         result = None
         if track_for_largest and track_for_largest.last_result:
             result = track_for_largest.last_result
-        elif embeddings_to_search:
+        elif len(embeddings_to_search) > 0:
             # If embedding ran for largest face but result wasn't cached yet
             if largest_index in face_indices:
-                result = results[face_indices.index(largest_index)] if results else None
+                result = results[face_indices.index(largest_index)] if len(results) > 0 else None
         
-        if result and result['confidence'] >= 0.65:
+        if result is not None and result.get('confidence', 0) >= 0.65:
             return RecognitionResponse(
-                name=result['name'],
-                confidence=result['confidence'],
+                name=result.get('name'),
+                confidence=float(result.get('confidence', 0)),
                 is_recognized=True,
                 message="Face recognized successfully"
             )
         else:
             return RecognitionResponse(
                 name=None,
-                confidence=result['confidence'] if result else 0.0,
+                confidence=float(result.get('confidence', 0)) if result is not None else 0.0,
                 is_recognized=False,
                 message="Unknown face"
             )
             
     except Exception as e:
+        logger.error("Recognition crash traceback:\n" + traceback.format_exc())
         logger.error(f"Recognition error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -406,8 +420,15 @@ async def websocket_recognize(websocket: WebSocket):
                         })
                         continue
 
-                    # Use largest usable face
-                    face = face_processor.select_largest_face(usable_faces)
+                    # Use largest usable face (track index to avoid equality checks)
+                    largest_index = None
+                    largest_area = -1.0
+                    for i, f in enumerate(usable_faces):
+                        area = (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
+                        if area > largest_area:
+                            largest_area = area
+                            largest_index = i
+                    face = usable_faces[largest_index]
                     
                     # Tracking + gating + batch search
                     now_ts = time.time()
@@ -425,7 +446,7 @@ async def websocket_recognize(websocket: WebSocket):
                             face_indices.append(idx)
 
                     results = []
-                    if embeddings_to_search:
+                    if len(embeddings_to_search) > 0:
                         results = milvus_client.search_faces(embeddings_to_search)
                         for r_idx, face_idx in enumerate(face_indices):
                             recognition_pipeline.update_track_result(
@@ -436,19 +457,19 @@ async def websocket_recognize(websocket: WebSocket):
                                 now_ts
                             )
 
-                    largest_index = usable_faces.index(face)
+                    # largest_index already computed above
                     track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
                     result = None
                     if track_for_largest and track_for_largest.last_result:
                         result = track_for_largest.last_result
-                    elif embeddings_to_search and largest_index in face_indices:
-                        result = results[face_indices.index(largest_index)] if results else None
+                    elif len(embeddings_to_search) > 0 and largest_index in face_indices:
+                        result = results[face_indices.index(largest_index)] if len(results) > 0 else None
                     
-                    if result and result['confidence'] >= 0.65:
+                    if result is not None and result.get('confidence', 0) >= 0.65:
                         await websocket.send_json({
                             "type": "result",
-                            "name": result['name'],
-                            "confidence": float(result['confidence']),
+                            "name": result.get('name'),
+                            "confidence": float(result.get('confidence', 0)),
                             "is_recognized": True,
                             "message": "Face recognized"
                         })
@@ -456,7 +477,7 @@ async def websocket_recognize(websocket: WebSocket):
                         await websocket.send_json({
                             "type": "result",
                             "name": None,
-                            "confidence": float(result['confidence']) if result else 0.0,
+                            "confidence": float(result.get('confidence', 0)) if result is not None else 0.0,
                             "is_recognized": False,
                             "message": "Unknown face"
                         })

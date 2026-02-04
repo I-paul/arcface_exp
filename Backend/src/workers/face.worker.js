@@ -2,6 +2,9 @@ const { Worker } = require('bullmq');
 const fs = require('fs');
 const axios = require('axios');
 const FormData = require('form-data');
+const dotenv = require('dotenv');
+
+dotenv.config();
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
@@ -27,8 +30,8 @@ new Worker(
 	{
 		concurrency: 3,
 		connection: {
-			host: 'redis',
-			port: 6379,
+			host: process.env.REDIS_HOST || 'localhost',
+			port: process.env.REDIS_PORT || 6379,
 		},
 	}
 );

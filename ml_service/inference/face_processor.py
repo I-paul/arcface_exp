@@ -78,7 +78,7 @@ class FaceProcessor:
         
         # Prepare with GPU context (ctx_id=0 is GPU 0)
         ctx_id = 0 if self.device == "cuda" else -1
-        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640), det_thresh=0.5)
 
         # Log actual runtime providers to verify GPU execution
         providers_info = self.get_runtime_providers()
