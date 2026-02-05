@@ -5,7 +5,14 @@ embeddings_db/
 .vscode/
 __pycache__/
 node_modules/
+
+# Environment files - never commit these
 .env
+.env.local
+.env.*.local
+.env.backend
+.env.ml_service
+
 # Keep all files
 venv/
 .venv

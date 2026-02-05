@@ -7,6 +7,7 @@ const {
 	deleteEmployee,
 	enrollFace,
 	recognizeFace,
+	getJobStatus,
 } = require('../models/employee.model');
 const multer = require('multer');
 const os = require('os');
@@ -29,6 +30,9 @@ router.delete('/employee/:id', deleteEmployee);
 // Face endpoints
 router.post('/enroll', upload.array('files', 5), enrollFace);
 router.post('/recognize', upload.single('file'), recognizeFace);
+
+// Job status endpoint
+router.get('/job/:jobId', getJobStatus);
 
 
 module.exports = router;
