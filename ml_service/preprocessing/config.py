@@ -15,7 +15,7 @@ PROFILES = {
         "face_min_size": 50,  # pixels
     },
     "recognize": {
-        "blur_min": 80.0,  # More lenient for recognition
+        "blur_min": 60.0,  # More lenient for recognition
         "pose_max": 25.0,  # degrees
         "brightness_min": 20.0,
         "brightness_max": 235.0,

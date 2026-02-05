@@ -81,7 +81,7 @@ services:
   # ATTU - Milvus GUI
   # ============================================
   attu:
-    image: ghcr.io/zilliztech/attu:latest
+    image: zilliz/attu:latest
     container_name: milvus-attu
     ports:
       - "8888:3000"

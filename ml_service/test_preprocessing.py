@@ -167,7 +167,7 @@ def test_mode_comparison():
         'nose': [100, 120],
         'left_mouth': [85, 150],
         'right_mouth': [115, 150],
-    }
+    } 
     
     # Enroll mode
     req_enroll = PreprocessRequest(
