@@ -3,6 +3,7 @@ Recognition pipeline with tracking, gating, and micro-batch search.
 """
 from typing import List, Tuple, Optional
 import time
+import numpy as np
 
 from .tracker import SimpleTracker
 
@@ -30,6 +31,18 @@ class RecognitionPipeline:
             self._sessions[session_id] = tracker
         return tracker
 
+    @staticmethod
+    def _to_scalar(value):
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except Exception:
+            try:
+                return float(np.max(value))
+            except Exception:
+                return None
+
     def get_track(self, session_id: str, track_id: int):
         tracker = self._get_session(session_id)
         return tracker.get_track(track_id)
@@ -50,7 +63,11 @@ class RecognitionPipeline:
             return True
 
         # Confidence-based gating
-        if track.last_confidence is None or track.last_confidence < self.low_confidence_threshold:
+        conf = self._to_scalar(track.last_confidence)
+        if conf is None:
+            return True
+
+        if conf < self.low_confidence_threshold:
             return True
 
         # BBox size change gating
@@ -71,7 +88,8 @@ class RecognitionPipeline:
         track.last_seen = now
         track.last_embed_ts = now
         track.last_result = result
-        track.last_confidence = result.get("confidence") if result else None
+        conf = result.get("confidence") if result else None
+        track.last_confidence = self._to_scalar(conf)
 
     def get_cached_result(self, session_id: str, track_id: int) -> Optional[dict]:
         tracker = self._get_session(session_id)

@@ -114,6 +114,38 @@ services:
       - NODE_ENV=production
     depends_on:
       - ml-service
+      - redis
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # ============================================
+  # REDIS - Job Queue
+  # ============================================
+  redis:
+    container_name: redis
+    image: redis:7
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # ============================================
+  # WORKER - Face Recognition Queue Processor
+  # ============================================
+  worker:
+    container_name: face-worker
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    command: node src/workers/face.worker.js
+    environment:
+      - ML_SERVICE_URL=http://ml-service:8000
+      - NODE_ENV=production
+    depends_on:
+      - redis
+      - ml-service
     restart: unless-stopped
     networks:
       - app-network

@@ -1,6 +1,9 @@
 """
 Face Processing Module
 Handles face detection, embedding extraction, and quality checks
+
+Note: Preprocessing logic has been moved to the preprocessing module.
+This module now focuses on detection and embedding extraction.
 """
 import cv2
 import numpy as np
@@ -8,6 +11,8 @@ import insightface
 from insightface.app import FaceAnalysis
 import torch
 import logging
+from preprocessing.preprocessor import preprocess
+from preprocessing.schemas import PreprocessRequest
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +78,7 @@ class FaceProcessor:
         
         # Prepare with GPU context (ctx_id=0 is GPU 0)
         ctx_id = 0 if self.device == "cuda" else -1
-        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640))
+        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640), det_thresh=0.5)
 
         # Log actual runtime providers to verify GPU execution
         providers_info = self.get_runtime_providers()
@@ -121,6 +126,7 @@ class FaceProcessor:
         """
         try:
             faces = self.app.get(image)
+            logger.info(f"Detected {len(faces)} face(s)")
             return faces
         except Exception as e:
             logger.error(f"Face detection error: {str(e)}")
@@ -238,3 +244,172 @@ class FaceProcessor:
         """
         yaw = abs(self.estimate_yaw(face))
         return yaw < threshold
+    
+    def preprocess_face(self, image: np.ndarray, face, mode: str = "recognize"):
+        """
+        Preprocess detected face using the preprocessing module
+        
+        Args:
+            image: Original image
+            face: Detected face object from InsightFace
+            mode: Processing mode ("enroll" or "recognize")
+            
+        Returns:
+            PreprocessResponse object with usability status and processed tensor
+        """
+        # Extract landmarks from InsightFace face object
+        landmarks = self._extract_landmarks(face)
+        
+        # Create preprocessing request
+        req = PreprocessRequest(
+            image=image,
+            bbox=face.bbox.tolist(),
+            landmarks=landmarks,
+            mode=mode
+        )
+        
+        # Run preprocessing pipeline
+        result = preprocess(req)
+        
+        # Log rejection if applicable
+        if not result.usable:
+            logger.warning(
+                f"Face rejected during preprocessing: {result.reject_reason} "
+                f"(metrics: {result.quality_metrics})"
+            )
+        else:
+            logger.info(
+                f"Face preprocessed successfully "
+                f"(blur: {result.quality_metrics.get('blur', 0):.1f}, "
+                f"brightness: {result.quality_metrics.get('brightness', 0):.1f})"
+            )
+        
+        return result
+    
+    def _extract_landmarks(self, face) -> dict:
+        """
+        Extract landmarks from InsightFace face object
+        
+        Args:
+            face: InsightFace face object with kps attribute
+            
+        Returns:
+            Dictionary with landmark coordinates
+        """
+        if face.kps is None or len(face.kps) < 5:
+            # Return dummy landmarks if not available
+            # (preprocessing will detect this and reject)
+            return {
+                'left_eye': [0, 0],
+                'right_eye': [0, 0],
+                'nose': [0, 0],
+                'left_mouth': [0, 0],
+                'right_mouth': [0, 0],
+            }
+        
+        kps = face.kps
+        return {
+            'left_eye': kps[0].tolist(),
+            'right_eye': kps[1].tolist(),
+            'nose': kps[2].tolist(),
+            'left_mouth': kps[3].tolist(),
+            'right_mouth': kps[4].tolist(),
+        }
+    
+    def process_for_enrollment(self, image: np.ndarray):
+        """
+        Process image for enrollment (strict quality checks)
+        
+        Args:
+            image: Input image (BGR format)
+            
+        Returns:
+            Dictionary with:
+            - success: bool
+            - embedding: normalized embedding vector (if success)
+            - face_tensor: preprocessed face tensor
+            - quality_metrics: quality scores
+            - reject_reason: reason for rejection (if not success)
+        """
+        # Detect faces
+        faces = self.detect_faces(image)
+        
+        if not faces:
+            return {
+                "success": False,
+                "reject_reason": "NO_FACE_DETECTED",
+                "quality_metrics": {}
+            }
+        
+        # Select largest face
+        face = self.select_largest_face(faces)
+        
+        # Preprocess with strict enrollment profile
+        preprocess_result = self.preprocess_face(image, face, mode="enroll")
+        
+        if not preprocess_result.usable:
+            return {
+                "success": False,
+                "reject_reason": preprocess_result.reject_reason,
+                "quality_metrics": preprocess_result.quality_metrics
+            }
+        
+        # Extract embedding
+        embedding = self.get_embedding(face)
+        
+        return {
+            "success": True,
+            "embedding": embedding,
+            "face_tensor": preprocess_result.face_tensor,
+            "quality_metrics": preprocess_result.quality_metrics,
+            "flags": preprocess_result.flags
+        }
+    
+    def process_for_recognition(self, image: np.ndarray):
+        """
+        Process image for recognition (lenient quality checks)
+        
+        Args:
+            image: Input image (BGR format)
+            
+        Returns:
+            Dictionary with:
+            - success: bool
+            - embedding: normalized embedding vector (if success)
+            - face_tensor: preprocessed face tensor
+            - quality_metrics: quality scores
+            - reject_reason: reason for rejection (if not success)
+        """
+        # Detect faces
+        faces = self.detect_faces(image)
+        
+        if not faces:
+            return {
+                "success": False,
+                "reject_reason": "NO_FACE_DETECTED",
+                "quality_metrics": {}
+            }
+        
+        # Select largest face
+        face = self.select_largest_face(faces)
+        
+        # Preprocess with lenient recognition profile
+        preprocess_result = self.preprocess_face(image, face, mode="recognize")
+        
+        if not preprocess_result.usable:
+            return {
+                "success": False,
+                "reject_reason": preprocess_result.reject_reason,
+                "quality_metrics": preprocess_result.quality_metrics
+            }
+        
+        # Extract embedding
+        embedding = self.get_embedding(face)
+        
+        return {
+            "success": True,
+            "embedding": embedding,
+            "face_tensor": preprocess_result.face_tensor,
+            "quality_metrics": preprocess_result.quality_metrics,
+            "flags": preprocess_result.flags
+        }

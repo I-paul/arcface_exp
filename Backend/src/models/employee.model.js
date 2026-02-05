@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
+const faceQueue = require('../queues/face.queue');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 
 
@@ -70,47 +71,89 @@ const enrollFace = async (req, res) => {
 };
 
 /**
- * Call ML service /recognize endpoint.
+ * Queue-based face recognition - adds job to queue and returns job ID for status tracking.
  */
 const recognizeFace = async (req, res) => {
-	const fileToCleanup = req.file?.path || null;
 	try {
 		if (!req.file) {
 			return res.status(400).json({ message: 'Image file is required' });
 		}
 
-		const form = new FormData();
-		form.append('file', fs.createReadStream(req.file.path), req.file.originalname);
-
-		const { data } = await axios.post(`${ML_SERVICE_URL}/recognize`, form, {
-			headers: form.getHeaders(),
-			timeout: 20000,
+		// Add job to queue
+		const job = await faceQueue.add('recognize-face', {
+			imagePath: req.file.path,
+			originalName: req.file.originalname,
+			requestTime: new Date().toISOString(),
 		});
 
-		return res.status(200).json({
-			message: data.name
-				? `Recognized ${data.name}`
-				: 'Unknown face',
-			name: data.name || null,
-			confidence: data.confidence ?? null,
-			is_recognized: Boolean(data.is_recognized),
+		console.log(`[QUEUE] Job ${job.id} added to face recognition queue`);
+
+		// Return job ID immediately for client to track
+		return res.status(202).json({
+			message: 'Face recognition job queued',
+			job_id: job.id,
+			status: 'queued',
+			status_url: `/api/job/${job.id}`,
 		});
 	} catch (error) {
-		const status = error.response?.status || 500;
-		const detail = error.response?.data || { message: 'Recognition failed' };
-		console.error('[ERROR] Recognition error:', detail);
-		return res.status(status).json(detail);
-	} finally {
-		if (fileToCleanup) {
-			try {
-				if (fs.existsSync(fileToCleanup)) {
-					fs.unlinkSync(fileToCleanup);
-					console.log(`[CLEANUP] Deleted temp file: ${fileToCleanup}`);
-				}
-			} catch (err) {
-				console.error(`[CLEANUP] Failed to delete ${fileToCleanup}:`, err.message);
+		// Cleanup temp file on error
+		try {
+			if (req.file && fs.existsSync(req.file.path)) {
+				fs.unlinkSync(req.file.path);
+				console.log(`[CLEANUP] Deleted temp file after queue error: ${req.file.path}`);
 			}
+		} catch (cleanupErr) {
+			console.error('[CLEANUP] Failed to delete temp file:', cleanupErr.message);
 		}
+
+		console.error('[ERROR] Failed to queue recognition job:', error.message);
+		return res.status(500).json({ message: 'Failed to queue recognition job' });
+	}
+};
+
+/**
+ * Get job status and result by job ID.
+ */
+const getJobStatus = async (req, res) => {
+	try {
+		const { jobId } = req.params;
+
+		if (!jobId) {
+			return res.status(400).json({ message: 'Job ID is required' });
+		}
+
+		const job = await faceQueue.getJob(jobId);
+
+		if (!job) {
+			return res.status(404).json({ message: 'Job not found' });
+		}
+
+		const state = await job.getState();
+		const progress = job.progress;
+
+		const response = {
+			job_id: job.id,
+			status: state,
+			progress: progress,
+			created_at: new Date(job.timestamp).toISOString(),
+		};
+
+		// If job is completed, include result
+		if (state === 'completed') {
+			response.result = job.returnvalue;
+			response.completed_at = new Date(job.finishedOn).toISOString();
+		}
+
+		// If job failed, include error
+		if (state === 'failed') {
+			response.error = job.failedReason;
+			response.failed_at = new Date(job.finishedOn).toISOString();
+		}
+
+		return res.status(200).json(response);
+	} catch (error) {
+		console.error('[ERROR] Failed to get job status:', error.message);
+		return res.status(500).json({ message: 'Failed to retrieve job status' });
 	}
 };
 
@@ -290,4 +333,5 @@ module.exports = {
 	deleteEmployee,
 	enrollFace,
 	recognizeFace,
+	getJobStatus,
 };

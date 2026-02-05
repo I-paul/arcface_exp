@@ -1,4 +1,3 @@
-# Backend API Gateway
 FROM node:18-alpine
 
 WORKDIR /app
@@ -7,17 +6,13 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm install
 
 # Copy application code
 COPY . .
 
-# Expose port
+# Expose server port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
-
 # Start the application
-CMD ["node", "src/index.js"]
+CMD ["npm", "run", "start"]

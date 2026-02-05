@@ -1,5 +1,7 @@
 const axios = require('axios');
 const FormData = require('form-data');
+const faceQueue = require('../queues/face.queue');
+const { QueueEvents } = require('bullmq');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
 const MIN_RECOGNITION_INTERVAL_MS = 250; // ~4 FPS throttle
@@ -9,25 +11,64 @@ const MIN_RECOGNITION_INTERVAL_MS = 250; // ~4 FPS throttle
  * @param {Server} io - Socket.IO server instance
  */
 module.exports = function socketHandler(io) {
+  // Queue events listener for real-time notifications
+  const queueEvents = new QueueEvents('face-recognition', {
+    connection: {
+      host: process.env.REDIS_HOST || 'localhost',
+      port: process.env.REDIS_PORT || 6379,
+    },
+  });
+
+  // Listen for job completion events and emit to clients
+  queueEvents.on('completed', async ({ jobId, returnvalue }) => {
+    console.log(`[Socket.IO] Job ${jobId} completed, emitting result to clients`);
+    io.emit('job-completed', {
+      job_id: jobId,
+      result: returnvalue,
+      status: 'completed',
+    });
+  });
+
+  queueEvents.on('failed', ({ jobId, failedReason }) => {
+    console.log(`[Socket.IO] Job ${jobId} failed: ${failedReason}`);
+    io.emit('job-failed', {
+      job_id: jobId,
+      error: failedReason,
+      status: 'failed',
+    });
+  });
+
+  queueEvents.on('progress', ({ jobId, data }) => {
+    io.emit('job-progress', {
+      job_id: jobId,
+      progress: data,
+    });
+  });
+
   io.on('connection', (socket) => {
     console.log(`[Socket.IO] Client connected: ${socket.id}`);
 
     /**
-     * Real-time face recognition
-     * Receives image data from frontend and sends to ML service
+     * Real-time face recognition with multi-camera support
+     * Receives image data from frontend with camera_id and sends to ML service
      */
     socket.on('recognize-face', async (data) => {
       try {
-        const now = Date.now();
-        if (socket.lastRecognizeTs && (now - socket.lastRecognizeTs) < MIN_RECOGNITION_INTERVAL_MS) {
-          return; // throttle
-        }
-        socket.lastRecognizeTs = now;
-
-        const { image } = data; // Base64 encoded image
+        const { image, camera_id } = data; // Base64 encoded image and camera identifier
 
         if (!image) {
-          socket.emit('recognition-error', { message: 'No image provided' });
+          socket.emit('recognition-error', { 
+            message: 'No image provided',
+            camera_id 
+          });
+          return;
+        }
+
+        if (!camera_id) {
+          socket.emit('recognition-error', { 
+            message: 'No camera_id provided',
+            camera_id: 'unknown'
+          });
           return;
         }
 
@@ -53,8 +94,9 @@ module.exports = function socketHandler(io) {
           }
         );
 
-        // Emit result back to client
+        // Emit result back to client with camera_id
         socket.emit('recognition-result', {
+          camera_id,
           name: result.name || null,
           confidence: result.confidence || 0,
           is_recognized: result.is_recognized || false,
@@ -64,7 +106,10 @@ module.exports = function socketHandler(io) {
       } catch (error) {
         console.error('[Socket.IO] Recognition error:', error.message);
         const errorMessage = error.response?.data?.detail || 'Recognition failed';
-        socket.emit('recognition-error', { message: errorMessage });
+        socket.emit('recognition-error', { 
+          message: errorMessage,
+          camera_id: data?.camera_id || 'unknown'
+        });
       }
     });
 
