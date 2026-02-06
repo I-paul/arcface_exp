@@ -1,14 +1,25 @@
 const express = require('express');
 const {
-	createEmployee,
-	getAllEmployees,
-	getEmployeeById,
-	updateEmployee,
-	deleteEmployee,
-	enrollFace,
+	enrollEmployee,
 	recognizeFace,
 	getJobStatus,
+	getAllEmployees,
+	getEmployeeById,
+	deleteEmployee,
 } = require('../models/employee.model');
+const {
+	getAllCameras,
+	getCameraById,
+	createCamera,
+	updateCamera,
+	deleteCamera,
+} = require('../models/camera.model');
+const {
+	recordAttendanceEvent,
+	getAttendanceEvents,
+	getEmployeeAttendance,
+	getTodayAttendanceSummary,
+} = require('../models/attendance.model');
 const multer = require('multer');
 const os = require('os');
 const path = require('path');
@@ -19,20 +30,29 @@ const upload = multer({ dest: tempDir });
 
 const router = express.Router();
 
+// ====== CAMERA ROUTES ======
+router.get('/cameras', getAllCameras);
+router.get('/cameras/:cam_id', getCameraById);
+router.post('/cameras', createCamera);
+router.put('/cameras/:cam_id', updateCamera);
+router.delete('/cameras/:cam_id', deleteCamera);
 
-// Employee routes
-router.post('/employee', createEmployee);
-router.get('/employee', getAllEmployees);
-router.get('/employee/:id', getEmployeeById);
-router.put('/employee/:id', updateEmployee);
-router.delete('/employee/:id', deleteEmployee);
+// ====== EMPLOYEE ROUTES ======
+router.get('/employees', getAllEmployees);
+router.get('/employees/:emp_id', getEmployeeById);
+router.delete('/employees/:emp_id', deleteEmployee);
 
-// Face endpoints
-router.post('/enroll', upload.array('files', 5), enrollFace);
+// ====== FACE RECOGNITION & ENROLLMENT ======
+router.post('/enroll', upload.array('files', 5), enrollEmployee);
 router.post('/recognize', upload.single('file'), recognizeFace);
 
-// Job status endpoint
+// ====== JOB STATUS ======
 router.get('/job/:jobId', getJobStatus);
 
+// ====== ATTENDANCE EVENTS ======
+router.post('/attendance', recordAttendanceEvent);
+router.get('/attendance', getAttendanceEvents);
+router.get('/attendance/employee/:emp_id', getEmployeeAttendance);
+router.get('/attendance/summary/today', getTodayAttendanceSummary);
 
 module.exports = router;

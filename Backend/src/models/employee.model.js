@@ -4,52 +4,71 @@ const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
 const faceQueue = require('../queues/face.queue');
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const { recordAttendanceEvent } = require('./attendance.model');
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL;
 
-
-const REQUIRED_FIELDS = ['first_name', 'last_name', 'email'];
-const UPDATABLE_FIELDS = [
-	'first_name',
-	'last_name',
-	'email',
-	'phone',
-	'date_of_birth',
-	'gender',
-	'hire_date',
-	'job_title',
-	'salary',
-	'is_active',
-];
 
 /**
- * Call ML service /enroll endpoint.
+ * ENROLLMENT: Call ML service /enroll endpoint to register a new employee.
+ * This uploads face images to the ML service which returns a person_id (milvus_id).
+ * The employee is then stored in the database with the milvus_id linked to the vector DB.
  */
-const enrollFace = async (req, res) => {
+const enrollEmployee = async (req, res) => {
 	const filesToCleanup = (req.files || []).map((file) => file.path);
 	try {
-		const { name } = req.body;
+		const { emp_id, name } = req.body;
+		
+		if (!emp_id) {
+			return res.status(400).json({ message: 'emp_id is required for enrollment' });
+		}
 		if (!name) {
-			return res.status(400).json({ message: 'Name is required for enrollment' });
+			return res.status(400).json({ message: 'name is required for enrollment' });
 		}
 		if (!req.files || !req.files.length) {
 			return res.status(400).json({ message: 'At least one image file is required' });
 		}
 
+		// Check if employee already exists
+		const checkQuery = 'SELECT emp_id FROM employees WHERE emp_id = $1';
+		const checkResult = await pool.query(checkQuery, [emp_id]);
+
+		if (checkResult.rows.length > 0) {
+			return res.status(400).json({ message: 'Employee already enrolled with this ID' });
+		}
+
+		// Send to ML service for enrollment
 		const form = new FormData();
 		form.append('name', name);
 		req.files.forEach((file) => {
 			form.append('files', fs.createReadStream(file.path), file.originalname);
 		});
 
-		const { data } = await axios.post(`${ML_SERVICE_URL}/enroll`, form, {
+		const { data: mlData } = await axios.post(`${ML_SERVICE_URL}/enroll`, form, {
 			headers: form.getHeaders(),
 			timeout: 30000,
 		});
 
-		return res.status(200).json({
+		// Extract milvus_id from ML service response
+		const milvus_id = mlData.person_id;
+		if (!milvus_id) {
+			return res.status(500).json({ message: 'ML service did not return person_id' });
+		}
+
+		// Store in database
+		const insertQuery = `
+			INSERT INTO employees (emp_id, name, milvus_id)
+			VALUES ($1, $2, $3)
+			RETURNING emp_id, name, milvus_id;
+		`;
+
+		const { rows } = await pool.query(insertQuery, [emp_id, name, milvus_id]);
+
+		console.log(`[ENROLL] Employee ${emp_id} (${name}) enrolled with milvus_id ${milvus_id}`);
+
+		return res.status(201).json({
 			success: true,
-			message: data.message || `Enrolled ${name} successfully`,
-			person_id: data.person_id || null,
+			message: `Employee ${name} enrolled successfully`,
+			employee: rows[0]
 		});
 	} catch (error) {
 		const status = error.response?.status || 500;
@@ -71,7 +90,8 @@ const enrollFace = async (req, res) => {
 };
 
 /**
- * Queue-based face recognition - adds job to queue and returns job ID for status tracking.
+ * RECOGNITION: Queue-based face recognition - adds job to queue and returns job ID for status tracking.
+ * The job is processed asynchronously and results are emitted via WebSocket.
  */
 const recognizeFace = async (req, res) => {
 	try {
@@ -79,11 +99,15 @@ const recognizeFace = async (req, res) => {
 			return res.status(400).json({ message: 'Image file is required' });
 		}
 
+		const { cam_id, site_id } = req.body;
+
 		// Add job to queue
 		const job = await faceQueue.add('recognize-face', {
 			imagePath: req.file.path,
 			originalName: req.file.originalname,
 			requestTime: new Date().toISOString(),
+			cam_id: cam_id || null,
+			site_id: site_id || null,
 		});
 
 		console.log(`[QUEUE] Job ${job.id} added to face recognition queue`);
@@ -158,132 +182,35 @@ const getJobStatus = async (req, res) => {
 };
 
 /**
- * Create a new employee with image and face encoding registration.
+ * Get all enrolled employees
  */
-const createEmployee = async (req, res) => {
+const getAllEmployees = async (req, res) => {
 	try {
-		console.log('[INFO] Received request to create employee:', req.body);
-		const missing = REQUIRED_FIELDS.filter((field) => !req.body[field]);
-		if (missing.length) {
-			return res.status(400).json({ message: `Missing required fields: ${missing.join(', ')}` });
-		}
-		const {
-			first_name,
-			last_name,
-			email,
-			phone,
-			date_of_birth,
-			gender,
-			hire_date,
-			job_title,
-			salary,
-			is_active,
-		} = req.body;
-
-		// Face enrollment now handled via /api/enroll endpoint; proceed with DB insert only.
-
-		// Only insert into database if face enrollment succeeds
-		const insertQuery = `
-			INSERT INTO employee (
-				first_name, last_name, email, phone, date_of_birth, gender,
-				hire_date, job_title, salary, is_active
-			)
-			VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, CURRENT_DATE), $8, $9, COALESCE($10, TRUE))
-			RETURNING *;
+		const query = `
+			SELECT emp_id, name, milvus_id
+			FROM employees
+			ORDER BY emp_id;
 		`;
-
-		const values = [
-			first_name,
-			last_name,
-			email,
-			phone || null,
-			date_of_birth || null,
-			gender || null,
-			hire_date || null,
-			job_title || null,
-			salary || null,
-			is_active,
-		];
-		
-		const { rows } = await pool.query(insertQuery, values);
-		const employee = rows[0];
-
-		return res.status(201).json(employee);
-	} catch (error) {
-		console.error('Error creating employee:', error);
-		return res.status(500).json({ message: 'Internal server error' });
-	}
-};
-
-/**
- * Get all employees.
- */
-const getAllEmployees = async (_req, res) => {
-	try {
-		const { rows } = await pool.query('SELECT * FROM employee ORDER BY employee_id;');
+		const { rows } = await pool.query(query);
 		return res.status(200).json(rows);
 	} catch (error) {
-		console.error('Error fetching employees:', error);
-		return res.status(500).json({ message: 'Internal server error' });
+		console.error('[ERROR] Failed to fetch employees:', error.message);
+		return res.status(500).json({ message: 'Failed to fetch employees' });
 	}
 };
 
 /**
- * Get employee by ID.
+ * Get employee by emp_id
  */
 const getEmployeeById = async (req, res) => {
 	try {
-		const { id } = req.params;
-		const employeeId = Number(id);
-
-		if (!Number.isInteger(employeeId)) {
-			return res.status(400).json({ message: 'Employee id must be an integer' });
-		}
-
-		const { rows } = await pool.query('SELECT * FROM employee WHERE employee_id = $1;', [
-			employeeId,
-		]);
-
-		if (!rows.length) {
-			return res.status(404).json({ message: 'Employee not found' });
-		}
-
-		return res.status(200).json(rows[0]);
-	} catch (error) {
-		console.error('Error fetching employee:', error);
-		return res.status(500).json({ message: 'Internal server error' });
-	}
-};
-
-/**
- * Update employee by ID.
- */
-const updateEmployee = async (req, res) => {
-	try {
-		const { id } = req.params;
-		const employeeId = Number(id);
-
-		if (!Number.isInteger(employeeId)) {
-			return res.status(400).json({ message: 'Employee id must be an integer' });
-		}
-
-		const entries = Object.entries(req.body).filter(([key]) => UPDATABLE_FIELDS.includes(key));
-
-		if (!entries.length) {
-			return res.status(400).json({ message: 'No valid fields provided for update' });
-		}
-
-		const setClauses = entries.map(([key], index) => `${key} = $${index + 1}`);
-		const values = entries.map(([, value]) => value);
-
-		const updateQuery = `
-			UPDATE employee
-			SET ${setClauses.join(', ')}, updated_at = NOW()
-			WHERE employee_id = $${entries.length + 1}
-			RETURNING *;
+		const { emp_id } = req.params;
+		const query = `
+			SELECT emp_id, name, milvus_id
+			FROM employees
+			WHERE emp_id = $1;
 		`;
-
-		const { rows } = await pool.query(updateQuery, [...values, employeeId]);
+		const { rows } = await pool.query(query, [emp_id]);
 
 		if (!rows.length) {
 			return res.status(404).json({ message: 'Employee not found' });
@@ -291,47 +218,37 @@ const updateEmployee = async (req, res) => {
 
 		return res.status(200).json(rows[0]);
 	} catch (error) {
-		console.error('Error updating employee:', error);
-		return res.status(500).json({ message: 'Internal server error' });
+		console.error('[ERROR] Failed to fetch employee:', error.message);
+		return res.status(500).json({ message: 'Failed to fetch employee' });
 	}
 };
 
 /**
- * Delete employee by ID.
+ * Delete employee by emp_id
  */
 const deleteEmployee = async (req, res) => {
 	try {
-		const { id } = req.params;
-		const employeeId = Number(id);
+		const { emp_id } = req.params;
+		const query = 'DELETE FROM employees WHERE emp_id = $1;';
+		const result = await pool.query(query, [emp_id]);
 
-		if (!Number.isInteger(employeeId)) {
-			return res.status(400).json({ message: 'Employee id must be an integer' });
-		}
-
-		const { rowCount } = await pool.query('DELETE FROM employee WHERE employee_id = $1;', [
-			employeeId,
-		]);
-
-		if (rowCount === 0) {
+		if (result.rowCount === 0) {
 			return res.status(404).json({ message: 'Employee not found' });
 		}
-		else{
-			console.log(`Employee with ID ${employeeId} deleted successfully.`);
-		}
+
+		console.log(`[DELETE] Employee ${emp_id} deleted successfully`);
 		return res.status(204).send();
 	} catch (error) {
-		console.error('Error deleting employee:', error);
-		return res.status(500).json({ message: 'Internal server error' });
+		console.error('[ERROR] Failed to delete employee:', error.message);
+		return res.status(500).json({ message: 'Failed to delete employee' });
 	}
 };
 
 module.exports = {
-	createEmployee,
-	getAllEmployees,
-	getEmployeeById,
-	updateEmployee,
-	deleteEmployee,
-	enrollFace,
+	enrollEmployee,
 	recognizeFace,
 	getJobStatus,
+	getAllEmployees,
+	getEmployeeById,
+	deleteEmployee,
 };

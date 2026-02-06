@@ -5,8 +5,8 @@ dotenv.config();
 
 const faceQueue = new Queue('face-recognition', {
 	connection: {
-		host: process.env.REDIS_HOST || 'localhost',
-		port: process.env.REDIS_PORT || 6379,
+		host: process.env.REDIS_HOST ,
+		port: process.env.REDIS_PORT ,
 	},
 	defaultJobOptions: {
 		attempts: 2,

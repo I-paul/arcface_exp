@@ -1,105 +1,22 @@
-import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
-import { io } from 'socket.io-client';
-import CameraStream from './CameraStream';
-import RecognitionResult from './RecognitionResult';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
-const DEFAULT_RECOGNITION_INTERVAL = 1500; // ms
+const BACKEND_URL = 'http://localhost:3000';
+const RECOGNITION_INTERVAL = 2000; // ms
 
-function generateId() {
-  return Math.random().toString(36).slice(2, 10);
-}
-
-export default function MultiCamRecognition() {
-  // Socket and connection state
-  const [socket, setSocket] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
-  const [mlServiceStatus, setMlServiceStatus] = useState(null);
-
-  // Camera and recognition state
-  const [cameras, setCameras] = useState([]);
+export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
   const [availableDevices, setAvailableDevices] = useState([]);
-  const [recognitionResults, setRecognitionResults] = useState({}); // { cameraId: result }
+  const [recognitionResults, setRecognitionResults] = useState({});
+  const [selectedDbCamera, setSelectedDbCamera] = useState(null);
+  const [activeLocalCamera, setActiveLocalCamera] = useState(null);
+  const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState('');
+  const [status, setStatus] = useState('');
 
-  // References for streaming
-  const videoRefs = useRef({});
-  const imgRefs = useRef({});
-  const timerRefs = useRef({});
-  const streamsRef = useRef({});
-  const inFlightRef = useRef({});
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const timerRef = useRef(null);
 
-  // Initialize Socket.IO connection
-  useEffect(() => {
-    const socketInstance = io(BACKEND_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
-    });
-
-    socketInstance.on('connect', () => {
-      console.log('Connected to server');
-      setIsConnected(true);
-      setError('');
-      socketInstance.emit('check-ml-service');
-    });
-
-    socketInstance.on('disconnect', () => {
-      console.log('Disconnected from server');
-      setIsConnected(false);
-    });
-
-    socketInstance.on('connect_error', (err) => {
-      console.error('Connection error:', err);
-      setError('Failed to connect to server');
-      setIsConnected(false);
-    });
-
-    // Listen for recognition results with camera ID
-    socketInstance.on('recognition-result', (data) => {
-      const { camera_id, name, confidence, is_recognized, message } = data;
-      setRecognitionResults((prev) => ({
-        ...prev,
-        [camera_id]: {
-          name,
-          confidence,
-          is_recognized,
-          message,
-          timestamp: new Date().toLocaleTimeString(),
-          status: 'success'
-        }
-      }));
-    });
-
-    // Listen for recognition errors
-    socketInstance.on('recognition-error', (data) => {
-      const { camera_id, message } = data;
-      setRecognitionResults((prev) => ({
-        ...prev,
-        [camera_id]: {
-          message,
-          timestamp: new Date().toLocaleTimeString(),
-          status: 'error'
-        }
-      }));
-    });
-
-    // Listen for ML service status
-    socketInstance.on('ml-service-status', (data) => {
-      setMlServiceStatus(data);
-    });
-
-    setSocket(socketInstance);
-
-    return () => {
-      if (socketInstance) {
-        socketInstance.disconnect();
-      }
-    };
-  }, []);
-
-  // Enumerate available cameras on mount
+  // Load available devices
   useEffect(() => {
     const loadDevices = async () => {
       try {
@@ -110,302 +27,326 @@ export default function MultiCamRecognition() {
         setError('Unable to enumerate cameras. Check permissions.');
       }
     };
-
     loadDevices();
 
     return () => {
-      // Cleanup all streams on unmount
-      stopAllCameras();
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+      }
     };
   }, []);
 
-  const availableDeviceOptions = useMemo(() => {
-    return availableDevices.map((d, idx) => ({
-      id: d.deviceId,
-      label: d.label || `Camera ${idx + 1}`
-    }));
-  }, [availableDevices]);
+  // Start camera stream
+  const startCamera = useCallback(async (deviceId) => {
+    try {
+      setError('');
+      setStatus('Starting camera...');
 
-  // Add a new local camera
-  const addLocalCamera = useCallback(() => {
-    if (availableDeviceOptions.length === 0) {
-      setError('No local cameras found.');
-      return;
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        setActiveLocalCamera(deviceId);
+        setStatus('Camera started');
+      }
+    } catch (err) {
+      setError(`Failed to access camera: ${err.message}`);
+      setStatus('');
     }
-    const firstDevice = availableDeviceOptions[0];
-    const newCamera = {
-      id: generateId(),
-      type: 'local',
-      deviceId: firstDevice.id,
-      label: firstDevice.label,
-      isRunning: false,
-      intervalMs: DEFAULT_RECOGNITION_INTERVAL
-    };
-    setCameras((prev) => [...prev, newCamera]);
-    setError('');
-  }, [availableDeviceOptions]);
-
-  // Add a new IP camera
-  const addIpCamera = useCallback(() => {
-    const newCamera = {
-      id: generateId(),
-      type: 'ip',
-      ipUrl: 'http://10.1.31.201:8080/video',
-      label: 'IP Camera',
-      isRunning: false,
-      intervalMs: DEFAULT_RECOGNITION_INTERVAL
-    };
-    setCameras((prev) => [...prev, newCamera]);
-    setError('');
   }, []);
 
-  // Update camera configuration
-  const updateCamera = useCallback((cameraId, updates) => {
-    setCameras((prev) =>
-      prev.map((cam) =>
-        cam.id === cameraId ? { ...cam, ...updates } : cam
-      )
-    );
+  // Stop camera stream
+  const stopCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    setActiveLocalCamera(null);
+    setIsRunning(false);
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setStatus('Camera stopped');
   }, []);
 
-  // Remove camera
-  const removeCamera = useCallback((cameraId) => {
-    stopCamera(cameraId);
-    setCameras((prev) => prev.filter((cam) => cam.id !== cameraId));
-    setRecognitionResults((prev) => {
-      const updated = { ...prev };
-      delete updated[cameraId];
-      return updated;
-    });
-  }, []);
-
-  // Capture frame from video element
-  const captureFromVideo = (videoEl) => {
-    if (!videoEl || !videoEl.videoWidth) return null;
+  // Capture frame
+  const captureFrame = useCallback(() => {
+    if (!videoRef.current) return null;
     const canvas = document.createElement('canvas');
-    canvas.width = videoEl.videoWidth;
-    canvas.height = videoEl.videoHeight;
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoEl, 0, 0);
-    return canvas;
-  };
+    ctx.drawImage(videoRef.current, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.9);
+  }, []);
 
-  // Capture frame from image element (IP camera)
-  const captureFromImage = (imgEl) => {
-    if (!imgEl || !imgEl.naturalWidth) return null;
-    const canvas = document.createElement('canvas');
-    canvas.width = imgEl.naturalWidth;
-    canvas.height = imgEl.naturalHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(imgEl, 0, 0);
-    return canvas;
+  // Convert base64 to blob then to File
+  const base64ToFile = (base64, filename = 'frame.jpg') => {
+    const arr = base64.split(',');
+    const mime = arr[0].match(/:(.*?);/)[1];
+    const bstr = atob(arr[1]);
+    const n = bstr.length;
+    const u8arr = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      u8arr[i] = bstr.charCodeAt(i);
+    }
+    return new File([u8arr], filename, { type: mime });
   };
 
   // Send frame for recognition
-  const sendFrameForRecognition = useCallback(async (camera) => {
-    if (!socket || inFlightRef.current[camera.id]) return;
-
-    inFlightRef.current[camera.id] = true;
+  const sendFrameForRecognition = useCallback(async () => {
+    const imageData = captureFrame();
+    if (!imageData || !selectedDbCamera) return;
 
     try {
-      let canvas;
-      if (camera.type === 'local') {
-        const videoEl = videoRefs.current[camera.id];
-        canvas = captureFromVideo(videoEl);
-      } else {
-        const imgEl = imgRefs.current[camera.id];
-        canvas = captureFromImage(imgEl);
-      }
+      const file = base64ToFile(imageData);
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('cam_id', selectedDbCamera.cam_id);
+      formData.append('site_id', selectedDbCamera.site_id || '');
 
-      if (!canvas) return;
-
-      // Convert canvas to blob
-      const imageData = canvas.toDataURL('image/jpeg', 0.9);
-      
-      // Emit recognition request with camera ID
-      socket.emit('recognize-face', {
-        image: imageData,
-        camera_id: camera.id
+      const response = await fetch(`${BACKEND_URL}/api/recognize`, {
+        method: 'POST',
+        body: formData
       });
 
+      if (response.ok) {
+        const result = await response.json();
+        setStatus(`Job queued: ${result.job_id}`);
+        
+        // Poll for job result
+        const pollJob = async () => {
+          try {
+            const statusResponse = await fetch(`${BACKEND_URL}/api/job/${result.job_id}`);
+            const jobData = await statusResponse.json();
+
+            if (jobData.status === 'completed') {
+              const recognitionResult = jobData.result;
+              setRecognitionResults(prev => ({
+                ...prev,
+                [selectedDbCamera.cam_id]: {
+                  name: recognitionResult.name,
+                  confidence: recognitionResult.confidence,
+                  is_recognized: recognitionResult.is_recognized,
+                  timestamp: new Date().toLocaleTimeString(),
+                  status: 'success'
+                }
+              }));
+            } else if (jobData.status === 'failed') {
+              setRecognitionResults(prev => ({
+                ...prev,
+                [selectedDbCamera.cam_id]: {
+                  message: jobData.error || 'Recognition failed',
+                  timestamp: new Date().toLocaleTimeString(),
+                  status: 'error'
+                }
+              }));
+            } else {
+              // Still processing, poll again
+              setTimeout(pollJob, 1000);
+            }
+          } catch (err) {
+            console.error('Error polling job status:', err);
+          }
+        };
+
+        // Start polling after a short delay
+        setTimeout(pollJob, 500);
+      } else {
+        setError('Failed to send frame for recognition');
+      }
     } catch (err) {
-      console.error('Error sending frame:', err);
-      setRecognitionResults((prev) => ({
-        ...prev,
-        [camera.id]: {
-          message: 'Failed to capture frame',
-          status: 'error',
-          timestamp: new Date().toLocaleTimeString()
-        }
-      }));
-    } finally {
-      inFlightRef.current[camera.id] = false;
+      setError(`Recognition error: ${err.message}`);
     }
-  }, [socket]);
+  }, [captureFrame, selectedDbCamera]);
 
-  // Start recognition for a camera
-  const startCamera = useCallback(async (cameraId) => {
-    const camera = cameras.find((c) => c.id === cameraId);
-    if (!camera || camera.isRunning) return;
+  // Toggle recognition
+  const toggleRecognition = useCallback(() => {
+    if (!activeLocalCamera || !selectedDbCamera) {
+      setError('Please select a camera and a database camera');
+      return;
+    }
 
-    if (camera.type === 'local') {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { deviceId: { exact: camera.deviceId } },
-          audio: false
-        });
-        streamsRef.current[cameraId] = stream;
-        const videoEl = videoRefs.current[cameraId];
-        if (videoEl) {
-          videoEl.srcObject = stream;
-          await new Promise((resolve) => {
-            videoEl.onloadedmetadata = () => {
-              videoEl.play();
-              resolve();
-            };
-          });
-        }
-      } catch (err) {
-        setError(`Camera ${camera.label} permission denied`);
-        return;
+    if (isRunning) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
       }
+      setIsRunning(false);
+    } else {
+      setIsRunning(true);
+      timerRef.current = setInterval(() => {
+        sendFrameForRecognition();
+      }, RECOGNITION_INTERVAL);
+      // Send first frame immediately
+      sendFrameForRecognition();
     }
-
-    updateCamera(cameraId, { isRunning: true });
-
-    // Start recognition interval
-    timerRefs.current[cameraId] = setInterval(() => {
-      sendFrameForRecognition({ ...camera, isRunning: true });
-    }, camera.intervalMs);
-
-    // Send first frame immediately
-    sendFrameForRecognition(camera);
-  }, [cameras, updateCamera, sendFrameForRecognition]);
-
-  // Stop recognition for a camera
-  const stopCamera = useCallback((cameraId) => {
-    if (timerRefs.current[cameraId]) {
-      clearInterval(timerRefs.current[cameraId]);
-      delete timerRefs.current[cameraId];
-    }
-    if (streamsRef.current[cameraId]) {
-      streamsRef.current[cameraId].getTracks().forEach((track) => track.stop());
-      delete streamsRef.current[cameraId];
-    }
-    updateCamera(cameraId, { isRunning: false });
-  }, [updateCamera]);
-
-  // Start all cameras
-  const startAllCameras = useCallback(() => {
-    cameras.forEach((cam) => {
-      if (!cam.isRunning) {
-        startCamera(cam.id);
-      }
-    });
-  }, [cameras, startCamera]);
-
-  // Stop all cameras
-  const stopAllCameras = useCallback(() => {
-    cameras.forEach((cam) => {
-      if (cam.isRunning) {
-        stopCamera(cam.id);
-      }
-    });
-  }, [cameras, stopCamera]);
-
-  // Update device selection for local camera
-  const onDeviceChange = useCallback((cameraId, deviceId) => {
-    const device = availableDeviceOptions.find((d) => d.id === deviceId);
-    updateCamera(cameraId, {
-      deviceId,
-      label: device?.label || 'Camera'
-    });
-  }, [availableDeviceOptions, updateCamera]);
-
-  // Check ML service health
-  const checkMLService = useCallback(() => {
-    if (socket) {
-      socket.emit('check-ml-service');
-    }
-  }, [socket]);
+  }, [isRunning, activeLocalCamera, selectedDbCamera, sendFrameForRecognition]);
 
   return (
-    <div className="card wide">
-      <div className="header-row">
+    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+      <h2>🎥 Live Face Recognition</h2>
+
+      {error && <div style={{ ...styles.alert, backgroundColor: '#f8d7da', color: '#721c24' }}>{error}</div>}
+      {status && <div style={{ ...styles.alert, backgroundColor: '#d1ecf1', color: '#0c5460' }}>{status}</div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
+        {/* Camera Selection */}
         <div>
-          <h2>Multi-Camera Live Recognition</h2>
-          <p className="muted">Connect multiple cameras (local or IP) and see real-time recognition results for each.</p>
+          <h3>Local Camera</h3>
+          <select
+            value={activeLocalCamera || ''}
+            onChange={(e) => {
+              if (e.target.value && !isRunning) {
+                startCamera(e.target.value);
+              }
+            }}
+            style={styles.select}
+          >
+            <option value="">Select a camera</option>
+            {availableDevices.map((device) => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `Camera ${device.deviceId.substring(0, 8)}`}
+              </option>
+            ))}
+          </select>
         </div>
-        <div className="status-info">
-          <div className="status-item">
-            <span>Backend:</span>
-            <span className={`status-badge ${isConnected ? 'connected' : 'disconnected'}`}>
-              {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
-            </span>
-          </div>
-          {mlServiceStatus && (
-            <div className="status-item">
-              <span>ML Service:</span>
-              <span className={`status-badge ${mlServiceStatus.status === 'healthy' ? 'healthy' : 'offline'}`}>
-                {mlServiceStatus.status === 'healthy' ? '✓ Online' : '✗ Offline'}
-              </span>
-              {mlServiceStatus.gpu_available !== undefined && (
-                <span style={{ marginLeft: '0.5rem' }}>
-                  GPU: {mlServiceStatus.gpu_available ? '✓' : '✗'}
-                </span>
-              )}
-            </div>
-          )}
+
+        {/* Database Camera Selection */}
+        <div>
+          <h3>Associated Database Camera</h3>
+          <select
+            value={selectedDbCamera?.cam_id || ''}
+            onChange={(e) => {
+              const cam = dbCameras.find(c => c.cam_id === e.target.value);
+              setSelectedDbCamera(cam || null);
+            }}
+            style={styles.select}
+          >
+            <option value="">Select database camera</option>
+            {dbCameras.map((camera) => (
+              <option key={camera.cam_id} value={camera.cam_id}>
+                {camera.camera_label} ({camera.site_name || camera.site_id})
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      {/* Video Feed */}
+      <div style={styles.videoContainer}>
+        <video
+          ref={videoRef}
+          style={styles.video}
+          autoPlay
+          playsInline
+          muted
+        />
+      </div>
 
-      <div className="controls">
-        <button onClick={addLocalCamera} className="primary">
-          + Add Local Camera
+      {/* Controls */}
+      <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+        <button
+          onClick={toggleRecognition}
+          disabled={!activeLocalCamera || !selectedDbCamera}
+          style={{
+            ...styles.button,
+            backgroundColor: isRunning ? '#dc3545' : '#28a745',
+            opacity: (!activeLocalCamera || !selectedDbCamera) ? 0.5 : 1
+          }}
+        >
+          {isRunning ? 'Stop Recognition' : 'Start Recognition'}
         </button>
-        <button onClick={addIpCamera} className="secondary">
-          + Add IP Camera
-        </button>
-        <button onClick={startAllCameras} className="secondary">
-          Start All
-        </button>
-        <button onClick={stopAllCameras} className="secondary">
-          Stop All
-        </button>
-        <button onClick={checkMLService} className="secondary">
-          Check ML Service
+        <button
+          onClick={stopCamera}
+          style={styles.button}
+        >
+          Stop Camera
         </button>
       </div>
 
-      {cameras.length === 0 ? (
-        <div className="empty-state">
-          <p>No cameras configured yet.</p>
-          <p className="muted">Add a local or IP camera to start recognition.</p>
+      {/* Recognition Results */}
+      {Object.entries(recognitionResults).map(([camId, result]) => (
+        <div key={camId} style={{ marginTop: '20px', ...styles.resultCard }}>
+          <RecognitionResultBox result={result} />
         </div>
-      ) : (
-        <div className="cameras-grid">
-          {cameras.map((camera) => (
-            <div key={camera.id} className="camera-panel">
-              <CameraStream
-                camera={camera}
-                availableDeviceOptions={availableDeviceOptions}
-                videoRef={(el) => (videoRefs.current[camera.id] = el)}
-                imgRef={(el) => (imgRefs.current[camera.id] = el)}
-                onDeviceChange={(deviceId) => onDeviceChange(camera.id, deviceId)}
-                onUpdateCamera={(updates) => updateCamera(camera.id, updates)}
-                onStart={() => startCamera(camera.id)}
-                onStop={() => stopCamera(camera.id)}
-                onRemove={() => removeCamera(camera.id)}
-              />
-              <RecognitionResult
-                result={recognitionResults[camera.id]}
-              />
-            </div>
-          ))}
-        </div>
+      ))}
+    </div>
+  );
+}
+
+function RecognitionResultBox({ result }) {
+  return (
+    <div>
+      <p><strong>Timestamp:</strong> {result.timestamp}</p>
+      {result.status === 'success' && (
+        <>
+          <p><strong>Name:</strong> {result.name || 'Unknown'}</p>
+          <p><strong>Confidence:</strong> {(result.confidence * 100).toFixed(2)}%</p>
+          <p style={{ color: result.is_recognized ? '#28a745' : '#dc3545' }}>
+            <strong>Status:</strong> {result.is_recognized ? '✓ Recognized' : '✗ Not Recognized'}
+          </p>
+        </>
+      )}
+      {result.status === 'error' && (
+        <p style={{ color: '#dc3545' }}><strong>Error:</strong> {result.message}</p>
       )}
     </div>
   );
 }
+
+const styles = {
+  alert: {
+    padding: '15px',
+    marginBottom: '20px',
+    borderRadius: '4px',
+    border: '1px solid #dee2e6'
+  },
+  select: {
+    width: '100%',
+    padding: '10px',
+    borderRadius: '4px',
+    border: '1px solid #ddd',
+    fontSize: '14px',
+    marginTop: '5px'
+  },
+  videoContainer: {
+    position: 'relative',
+    aspectRatio: '16/9',
+    backgroundColor: '#000',
+    borderRadius: '8px',
+    overflow: 'hidden'
+  },
+  video: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover'
+  },
+  button: {
+    padding: '10px 20px',
+    border: 'none',
+    borderRadius: '4px',
+    color: '#fff',
+    cursor: 'pointer',
+    fontSize: '14px',
+    fontWeight: 'bold'
+  },
+  resultCard: {
+    backgroundColor: '#f9f9f9',
+    padding: '15px',
+    borderRadius: '8px',
+    border: '1px solid #ddd'
+  }
+};
