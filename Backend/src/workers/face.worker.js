@@ -3,6 +3,7 @@ const fs = require('fs');
 const axios = require('axios');
 const FormData = require('form-data');
 const dotenv = require('dotenv');
+const pool = require('../DB/config');
 
 dotenv.config();
 
@@ -37,6 +38,18 @@ const worker = new Worker(
 				headers: form.getHeaders(),
 				timeout: 20000,
 			});
+
+			if (data?.is_recognized && data?.person_id) {
+				try {
+					const query = 'SELECT name FROM employees WHERE milvus_id = $1';
+					const { rows } = await pool.query(query, [data.person_id]);
+					if (rows.length) {
+						data.name = rows[0].name;
+					}
+				} catch (lookupErr) {
+					console.error('[WORKER] Failed to resolve name:', lookupErr.message);
+				}
+			}
 
 			await job.updateProgress(80);
 

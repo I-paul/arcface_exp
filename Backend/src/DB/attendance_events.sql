@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS attendance_events (
   site_id VARCHAR,
 
   event_time TIMESTAMP,
-  action ENUM('IN','OUT'),
+  action VARCHAR CHECK (action IN ('IN','OUT')),
 
   similarity_score FLOAT,
   liveness_passed BOOLEAN,
@@ -20,3 +20,6 @@ CREATE TABLE IF NOT EXISTS attendance_events (
     FOREIGN KEY (cam_id)
     REFERENCES cameras (cam_id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_events_emp_time
+ON attendance_events (emp_id, event_time DESC);

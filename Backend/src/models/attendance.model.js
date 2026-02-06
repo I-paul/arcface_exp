@@ -13,10 +13,59 @@ const recordAttendanceEvent = async (req, res) => {
 			});
 		}
 
-		if (!['IN', 'OUT'].includes(action.toUpperCase())) {
+		const normalizedAction = action.toUpperCase();
+		if (!['IN', 'OUT'].includes(normalizedAction)) {
 			return res.status(400).json({ 
 				message: 'Action must be IN or OUT' 
 			});
+		}
+
+		let resolvedSiteId = site_id || null;
+		if (!resolvedSiteId) {
+			const siteQuery = 'SELECT site_id FROM cameras WHERE cam_id = $1';
+			const siteResult = await pool.query(siteQuery, [cam_id]);
+			if (!siteResult.rows.length || !siteResult.rows[0].site_id) {
+				return res.status(400).json({
+					message: 'site_id is required or must be resolvable from cam_id'
+				});
+			}
+			resolvedSiteId = siteResult.rows[0].site_id;
+		}
+
+		const lastEventQuery = `
+			SELECT site_id, action
+			FROM attendance_events
+			WHERE emp_id = $1
+			ORDER BY event_time DESC
+			LIMIT 1;
+		`;
+		const { rows: lastRows } = await pool.query(lastEventQuery, [emp_id]);
+		const lastEvent = lastRows.length ? lastRows[0] : null;
+
+		if (!lastEvent) {
+			if (normalizedAction !== 'IN') {
+				return res.status(400).json({
+					message: 'First event must be IN'
+				});
+			}
+		} else if (lastEvent.action === 'OUT') {
+			if (normalizedAction !== 'IN') {
+				return res.status(400).json({
+					message: 'Last action is OUT. Next action must be IN'
+				});
+			}
+		} else if (lastEvent.action === 'IN') {
+			if (lastEvent.site_id === resolvedSiteId) {
+				if (normalizedAction !== 'OUT') {
+					return res.status(400).json({
+						message: 'Last action is IN at this site. Next action must be OUT'
+					});
+				}
+			} else {
+				return res.status(400).json({
+					message: 'Must record OUT at current site before IN at a different site'
+				});
+			}
 		}
 
 		const query = `
@@ -34,8 +83,8 @@ const recordAttendanceEvent = async (req, res) => {
 		const { rows } = await pool.query(query, [
 			emp_id,
 			cam_id,
-			site_id || null,
-			action.toUpperCase(),
+			resolvedSiteId,
+			normalizedAction,
 			similarity_score || null,
 			liveness_passed || null
 		]);

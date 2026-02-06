@@ -95,16 +95,6 @@ class MilvusClient:
                 auto_id=True
             ),
             FieldSchema(
-                name="person_id",
-                dtype=DataType.VARCHAR,
-                max_length=100
-            ),
-            FieldSchema(
-                name="name",
-                dtype=DataType.VARCHAR,
-                max_length=200
-            ),
-            FieldSchema(
                 name="embedding",
                 dtype=DataType.FLOAT_VECTOR,
                 dim=self.EMBEDDING_DIM
@@ -145,36 +135,45 @@ class MilvusClient:
             return utility.has_collection(self.COLLECTION_NAME)
         except:
             return False
+
+    def drop_collection(self) -> bool:
+        """Drop the embeddings collection if it exists"""
+        try:
+            if utility.has_collection(self.COLLECTION_NAME):
+                Collection(self.COLLECTION_NAME).drop()
+                logger.info(f"Dropped collection '{self.COLLECTION_NAME}'")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to drop collection: {str(e)}")
+            return False
     
-    def insert_face(self, name: str, embedding: np.ndarray) -> str:
+    def insert_face(self, embedding: np.ndarray) -> str:
         """
         Insert a new face embedding
         
         Args:
-            name: Person's name
             embedding: Face embedding vector
             
         Returns:
-            person_id: Unique identifier for the person
+            milvus_id: Generated Milvus primary key
         """
         try:
-            # Generate person_id
-            person_id = f"person_{int(np.random.random() * 1e9)}"
-            
             # Prepare data
             data = [
-                [person_id],  # person_id
-                [name],       # name
                 [embedding.tolist()]  # embedding
             ]
             
             # Insert
             result = self.collection.insert(data)
             self.collection.flush()
-            
-            logger.info(f"Inserted face for {name} with person_id: {person_id}")
-            
-            return person_id
+
+            milvus_id = str(result.primary_keys[0]) if result.primary_keys else None
+            if milvus_id is None:
+                raise RuntimeError("Milvus did not return primary key")
+
+            logger.info(f"Inserted face embedding with milvus_id: {milvus_id}")
+
+            return milvus_id
             
         except Exception as e:
             logger.error(f"Failed to insert face: {str(e)}")
@@ -208,7 +207,7 @@ class MilvusClient:
                 anns_field="embedding",
                 param=search_params,
                 limit=top_k,
-                output_fields=["name", "person_id"]
+                output_fields=[]
             )
             
             if not results or len(results[0]) == 0:
@@ -218,8 +217,7 @@ class MilvusClient:
             top_result = results[0][0]
             
             return {
-                "name": top_result.entity.get("name"),
-                "person_id": top_result.entity.get("person_id"),
+                "person_id": str(top_result.id),
                 "confidence": float(top_result.distance)
             }
             
@@ -256,7 +254,7 @@ class MilvusClient:
                 anns_field="embedding",
                 param=search_params,
                 limit=top_k,
-                output_fields=["name", "person_id"]
+                output_fields=[]
             )
 
             output = []
@@ -266,8 +264,7 @@ class MilvusClient:
                     continue
                 top_result = res[0]
                 output.append({
-                    "name": top_result.entity.get("name"),
-                    "person_id": top_result.entity.get("person_id"),
+                    "person_id": str(top_result.id),
                     "confidence": float(top_result.distance)
                 })
             return output
@@ -276,22 +273,22 @@ class MilvusClient:
             logger.error(f"Batch search failed: {str(e)}")
             raise
     
-    def delete_face(self, person_id: str) -> bool:
+    def delete_face(self, milvus_id: str) -> bool:
         """
-        Delete a face by person_id
+        Delete a face by Milvus primary key
         
         Args:
-            person_id: Person identifier
+            milvus_id: Milvus primary key
             
         Returns:
             True if successful
         """
         try:
-            expr = f'person_id == "{person_id}"'
+            expr = f'id == {int(milvus_id)}'
             self.collection.delete(expr)
             self.collection.flush()
-            
-            logger.info(f"Deleted face with person_id: {person_id}")
+
+            logger.info(f"Deleted face with milvus_id: {milvus_id}")
             return True
             
         except Exception as e:
