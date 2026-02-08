@@ -11,6 +11,7 @@ const {
 	getAllCameras,
 	getCameraById,
 	createCamera,
+	registerCamera,
 	updateCamera,
 	deleteCamera,
 } = require('../models/camera.model');
@@ -34,6 +35,7 @@ const router = express.Router();
 router.get('/cameras', getAllCameras);
 router.get('/cameras/:cam_id', getCameraById);
 router.post('/cameras', createCamera);
+router.post('/register', registerCamera);
 router.put('/cameras/:cam_id', updateCamera);
 router.delete('/cameras/:cam_id', deleteCamera);
 

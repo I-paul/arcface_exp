@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 
-const BACKEND_URL = 'http://localhost:3000';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
 
-export default function CameraManagement({ cameras, onCameraAdded, onCameraDeleted }) {
+export default function CameraManagement({ cameras, onCameraAdded, onCameraDeleted, isLoading, loadError }) {
   const [showAddForm, setShowAddForm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -88,287 +88,128 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
   };
 
   return (
-    <div className="camera-management">
-      <div className="header">
-        <h2>📹 Camera Management</h2>
-        <button 
-          className="btn-primary"
-          onClick={() => setShowAddForm(!showAddForm)}
-        >
-          {showAddForm ? '✕ Cancel' : '+ Add New Camera'}
-        </button>
+    <div className="card">
+      <div className="header-row">
+        <div>
+          <h2>📹 Camera Management</h2>
+          <p className="muted">Manage camera locations used by recognition jobs.</p>
+        </div>
+        <div className="controls">
+          <button
+            className={showAddForm ? 'secondary' : 'primary'}
+            onClick={() => setShowAddForm(!showAddForm)}
+          >
+            {showAddForm ? '✕ Cancel' : '+ Add New Camera'}
+          </button>
+        </div>
       </div>
 
-      {error && <div className="alert alert-error">{error}</div>}
-      {message && <div className="alert alert-success">{message}</div>}
+      {loadError && <div className="error">{loadError}</div>}
+      {error && <div className="error">{error}</div>}
+      {message && <div className="success">{message}</div>}
 
-      {showAddForm && (
-        <form onSubmit={handleAddCamera} className="add-camera-form">
-          <div className="form-group">
-            <label>
-              Site ID *
-              <input
-                type="text"
-                name="site_id"
-                value={formData.site_id}
-                onChange={handleInputChange}
-                placeholder="e.g., SITE-001"
-                required
-              />
-            </label>
+      {isLoading && (
+        <div className="empty-state">
+          <p>Loading cameras...</p>
+          <p className="muted">Fetching configured cameras from the backend.</p>
+        </div>
+      )}
+
+      {!isLoading && showAddForm && (
+        <form onSubmit={handleAddCamera} className="camera-form">
+          <label className="field">
+            <span>Site ID *</span>
+            <input
+              type="text"
+              name="site_id"
+              value={formData.site_id}
+              onChange={handleInputChange}
+              placeholder="e.g., SITE-001"
+              required
+            />
+          </label>
+
+          <label className="field">
+            <span>Site Name</span>
+            <input
+              type="text"
+              name="site_name"
+              value={formData.site_name}
+              onChange={handleInputChange}
+              placeholder="e.g., Main Entrance"
+            />
+          </label>
+
+          <label className="field">
+            <span>Camera Label *</span>
+            <input
+              type="text"
+              name="camera_label"
+              value={formData.camera_label}
+              onChange={handleInputChange}
+              placeholder="e.g., Front Door Camera"
+              required
+            />
+          </label>
+
+          <div className="controls">
+            <button type="submit" disabled={loading} className="primary">
+              {loading ? 'Adding...' : 'Add Camera'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddForm(false)}
+              className="secondary"
+              disabled={loading}
+            >
+              Cancel
+            </button>
           </div>
-
-          <div className="form-group">
-            <label>
-              Site Name
-              <input
-                type="text"
-                name="site_name"
-                value={formData.site_name}
-                onChange={handleInputChange}
-                placeholder="e.g., Main Entrance"
-              />
-            </label>
-          </div>
-
-          <div className="form-group">
-            <label>
-              Camera Label *
-              <input
-                type="text"
-                name="camera_label"
-                value={formData.camera_label}
-                onChange={handleInputChange}
-                placeholder="e.g., Front Door Camera"
-                required
-              />
-            </label>
-          </div>
-
-          <button 
-            type="submit" 
-            disabled={loading}
-            className="btn-primary"
-          >
-            {loading ? 'Adding...' : 'Add Camera'}
-          </button>
         </form>
       )}
 
-      <div className="cameras-grid">
-        {cameras.length === 0 ? (
-          <div className="no-cameras">
-            <p>No cameras configured yet.</p>
-            <p>Click "Add New Camera" to get started!</p>
-          </div>
-        ) : (
-          cameras.map((camera) => (
+      {!isLoading && cameras.length === 0 && (
+        <div className="empty-state">
+          <p>No cameras configured yet.</p>
+          <p className="muted">Click “Add New Camera” to get started.</p>
+        </div>
+      )}
+
+      {!isLoading && cameras.length > 0 && (
+        <div className="cameras-grid">
+          {cameras.map((camera) => (
             <div key={camera.cam_id} className="camera-card">
-              <div className="camera-header">
-                <h3>{camera.camera_label}</h3>
+              <div className="camera-card-header">
+                <div>
+                  <h3>{camera.camera_label}</h3>
+                  <p className="muted">{camera.site_name || camera.site_id}</p>
+                </div>
                 <button
-                  className="btn-delete"
+                  className="ghost"
                   onClick={() => handleDeleteCamera(camera.cam_id)}
                   title="Delete camera"
                 >
-                  🗑️
+                  Delete
                 </button>
               </div>
               <div className="camera-details">
-                <p><strong>Site:</strong> {camera.site_name || camera.site_id}</p>
-                <p><strong>Site ID:</strong> {camera.site_id}</p>
-                <p><strong>Camera ID:</strong> <code>{camera.cam_id}</code></p>
-                <p><strong>Created:</strong> {new Date(camera.created_at).toLocaleString()}</p>
+                <div className="camera-meta">
+                  <span>Site ID</span>
+                  <strong>{camera.site_id}</strong>
+                </div>
+                <div className="camera-meta">
+                  <span>Camera ID</span>
+                  <strong>{camera.cam_id}</strong>
+                </div>
+                <div className="camera-meta">
+                  <span>Created</span>
+                  <strong>{new Date(camera.created_at).toLocaleString()}</strong>
+                </div>
               </div>
             </div>
-          ))
-        )}
-      </div>
-
-      <style jsx>{`
-        .camera-management {
-          padding: 20px;
-          max-width: 1200px;
-          margin: 0 auto;
-        }
-
-        .header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-bottom: 30px;
-        }
-
-        .header h2 {
-          margin: 0;
-          color: #333;
-        }
-
-        .btn-primary {
-          padding: 10px 20px;
-          background-color: #007bff;
-          color: white;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-size: 14px;
-          transition: background-color 0.3s;
-        }
-
-        .btn-primary:hover {
-          background-color: #0056b3;
-        }
-
-        .btn-primary:disabled {
-          background-color: #ccc;
-          cursor: not-allowed;
-        }
-
-        .alert {
-          padding: 15px;
-          margin-bottom: 20px;
-          border-radius: 4px;
-          animation: slideIn 0.3s ease-in-out;
-        }
-
-        @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateY(-10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        .alert-error {
-          background-color: #f8d7da;
-          color: #721c24;
-          border: 1px solid #f5c6cb;
-        }
-
-        .alert-success {
-          background-color: #d4edda;
-          color: #155724;
-          border: 1px solid #c3e6cb;
-        }
-
-        .add-camera-form {
-          background: #f9f9f9;
-          padding: 20px;
-          border-radius: 8px;
-          margin-bottom: 30px;
-          border: 1px solid #ddd;
-        }
-
-        .form-group {
-          margin-bottom: 15px;
-        }
-
-        .form-group label {
-          display: flex;
-          flex-direction: column;
-          font-weight: 500;
-          margin-bottom: 5px;
-          color: #333;
-        }
-
-        .form-group input {
-          padding: 10px;
-          border: 1px solid #ddd;
-          border-radius: 4px;
-          font-size: 14px;
-          margin-top: 5px;
-        }
-
-        .form-group input:focus {
-          outline: none;
-          border-color: #007bff;
-          box-shadow: 0 0 5px rgba(0, 123, 255, 0.3);
-        }
-
-        .cameras-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-          gap: 20px;
-        }
-
-        .no-cameras {
-          grid-column: 1 / -1;
-          text-align: center;
-          padding: 40px;
-          color: #666;
-          background: #f9f9f9;
-          border-radius: 8px;
-        }
-
-        .camera-card {
-          background: white;
-          border: 1px solid #ddd;
-          border-radius: 8px;
-          padding: 20px;
-          box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-          transition: transform 0.3s, box-shadow 0.3s;
-        }
-
-        .camera-card:hover {
-          transform: translateY(-2px);
-          box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
-        }
-
-        .camera-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: start;
-          margin-bottom: 15px;
-          gap: 10px;
-        }
-
-        .camera-header h3 {
-          margin: 0;
-          color: #333;
-          flex-grow: 1;
-        }
-
-        .btn-delete {
-          background: none;
-          border: none;
-          font-size: 18px;
-          cursor: pointer;
-          padding: 0;
-          opacity: 0.6;
-          transition: opacity 0.3s;
-        }
-
-        .btn-delete:hover {
-          opacity: 1;
-        }
-
-        .camera-details {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .camera-details p {
-          margin: 0;
-          font-size: 14px;
-          color: #666;
-        }
-
-        .camera-details strong {
-          color: #333;
-        }
-
-        .camera-details code {
-          background: #f5f5f5;
-          padding: 2px 6px;
-          border-radius: 3px;
-          font-family: monospace;
-          font-size: 12px;
-        }
-      `}</style>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

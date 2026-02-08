@@ -9,22 +9,29 @@ const NAV = {
   ENROLL: 'enroll',
 };
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+
 export default function App() {
   const [tab, setTab] = useState(NAV.CAMERAS);
   const [cameras, setCameras] = useState([]);
   const [camerasLoaded, setCamerasLoaded] = useState(false);
+  const [cameraError, setCameraError] = useState('');
 
   // Fetch cameras on app load
   useEffect(() => {
     const fetchCameras = async () => {
       try {
-        const response = await fetch('http://localhost:3000/api/cameras');
+        setCameraError('');
+        const response = await fetch(`${BACKEND_URL}/api/cameras`);
         if (response.ok) {
           const data = await response.json();
           setCameras(data);
+        } else {
+          setCameraError('Unable to load cameras from server.');
         }
       } catch (error) {
         console.error('Failed to fetch cameras:', error);
+        setCameraError('Failed to connect to server.');
       } finally {
         setCamerasLoaded(true);
       }
@@ -68,14 +75,18 @@ export default function App() {
       </header>
 
       <main className="content">
-        {tab === NAV.CAMERAS && camerasLoaded && (
-          <CameraManagement 
-            cameras={cameras} 
-            onCameraAdded={handleCameraAdded} 
+        {tab === NAV.CAMERAS && (
+          <CameraManagement
+            cameras={cameras}
+            onCameraAdded={handleCameraAdded}
             onCameraDeleted={handleCameraDeleted}
+            isLoading={!camerasLoaded}
+            loadError={cameraError}
           />
         )}
-        {tab === NAV.RECOGNITION && <MultiCamRecognition cameras={cameras} />}
+        {tab === NAV.RECOGNITION && (
+          <MultiCamRecognition cameras={cameras} isCamerasLoaded={camerasLoaded} />
+        )}
         {tab === NAV.ENROLL && <EnrollSocket />}
       </main>
     </div>

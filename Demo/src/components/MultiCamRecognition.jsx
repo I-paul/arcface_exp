@@ -1,9 +1,10 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
+import RecognitionResult from './RecognitionResult';
 
-const BACKEND_URL = 'http://localhost:3000';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
 const RECOGNITION_INTERVAL = 2000; // ms
 
-export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
+export default function MultiCamRecognition({ cameras: dbCameras = [], isCamerasLoaded = true }) {
   const [availableDevices, setAvailableDevices] = useState([]);
   const [recognitionResults, setRecognitionResults] = useState({});
   const [selectedDbCamera, setSelectedDbCamera] = useState(null);
@@ -11,6 +12,7 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
+  const [videoReady, setVideoReady] = useState(false);
 
   const videoRef = useRef(null);
   const streamRef = useRef(null);
@@ -20,6 +22,10 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
   useEffect(() => {
     const loadDevices = async () => {
       try {
+        if (!navigator.mediaDevices?.enumerateDevices) {
+          setError('Camera access is not supported in this browser.');
+          return;
+        }
         const devices = await navigator.mediaDevices.enumerateDevices();
         const videoDevices = devices.filter((d) => d.kind === 'videoinput');
         setAvailableDevices(videoDevices);
@@ -49,16 +55,28 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
         streamRef.current.getTracks().forEach(track => track.stop());
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false
-      });
+      const constraints = deviceId
+        ? { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }
+        : { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        videoRef.current.onloadedmetadata = async () => {
+          try {
+            await videoRef.current.play();
+            setVideoReady(true);
+            setStatus('Camera ready');
+          } catch (playError) {
+            setError('Unable to play camera stream. Please allow autoplay.');
+          }
+        };
         setActiveLocalCamera(deviceId);
         setStatus('Camera started');
+      } else {
+        setError('Video element not available. Please reload the page.');
       }
     } catch (err) {
       setError(`Failed to access camera: ${err.message}`);
@@ -72,8 +90,12 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
     setActiveLocalCamera(null);
     setIsRunning(false);
+    setVideoReady(false);
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -84,6 +106,7 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
   // Capture frame
   const captureFrame = useCallback(() => {
     if (!videoRef.current) return null;
+    if (!videoRef.current.videoWidth) return null;
     const canvas = document.createElement('canvas');
     canvas.width = videoRef.current.videoWidth;
     canvas.height = videoRef.current.videoHeight;
@@ -196,16 +219,41 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
   }, [isRunning, activeLocalCamera, selectedDbCamera, sendFrameForRecognition]);
 
   return (
-    <div style={{ padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-      <h2>🎥 Live Face Recognition</h2>
-
-      {error && <div style={{ ...styles.alert, backgroundColor: '#f8d7da', color: '#721c24' }}>{error}</div>}
-      {status && <div style={{ ...styles.alert, backgroundColor: '#d1ecf1', color: '#0c5460' }}>{status}</div>}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
-        {/* Camera Selection */}
+    <div className="card wide">
+      <div className="header-row">
         <div>
-          <h3>Local Camera</h3>
+          <h2>🎥 Live Face Recognition</h2>
+          <p className="muted">Stream a local camera and match against registered cameras.</p>
+        </div>
+        <div className="status-info">
+          <div className="status-item">
+            <span className={`status-badge ${isRunning ? 'connected' : 'offline'}`}>
+              {isRunning ? 'Running' : 'Idle'}
+            </span>
+            <span>{activeLocalCamera ? 'Camera active' : 'No active camera'}</span>
+          </div>
+          <div className="status-item">
+            <span className={`status-badge ${selectedDbCamera ? 'healthy' : 'offline'}`}>
+              {selectedDbCamera ? 'Linked' : 'Not linked'}
+            </span>
+            <span>{selectedDbCamera ? selectedDbCamera.camera_label : 'Select a DB camera'}</span>
+          </div>
+        </div>
+      </div>
+
+      {error && <div className="error">{error}</div>}
+      {status && <div className="success">{status}</div>}
+
+      {!isCamerasLoaded && (
+        <div className="empty-state">
+          <p>Loading camera registry...</p>
+          <p className="muted">Waiting for backend camera list.</p>
+        </div>
+      )}
+
+      <div className="form-grid">
+        <label className="field">
+          <span>Local Camera</span>
           <select
             value={activeLocalCamera || ''}
             onChange={(e) => {
@@ -213,7 +261,7 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
                 startCamera(e.target.value);
               }
             }}
-            style={styles.select}
+            disabled={isRunning}
           >
             <option value="">Select a camera</option>
             {availableDevices.map((device) => (
@@ -222,18 +270,17 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
               </option>
             ))}
           </select>
-        </div>
+        </label>
 
-        {/* Database Camera Selection */}
-        <div>
-          <h3>Associated Database Camera</h3>
+        <label className="field">
+          <span>Associated Database Camera</span>
           <select
             value={selectedDbCamera?.cam_id || ''}
             onChange={(e) => {
               const cam = dbCameras.find(c => c.cam_id === e.target.value);
               setSelectedDbCamera(cam || null);
             }}
-            style={styles.select}
+            disabled={!isCamerasLoaded}
           >
             <option value="">Select database camera</option>
             {dbCameras.map((camera) => (
@@ -242,111 +289,41 @@ export default function MultiCamRecognition({ cameras: dbCameras = [] }) {
               </option>
             ))}
           </select>
-        </div>
+        </label>
       </div>
 
-      {/* Video Feed */}
-      <div style={styles.videoContainer}>
+      <div className="video-container">
         <video
           ref={videoRef}
-          style={styles.video}
+          className="video-feed"
           autoPlay
           playsInline
           muted
         />
+        {!videoReady && (
+          <div className="video-placeholder">
+            <p>Camera preview will appear here</p>
+            <span>Select a local camera to start the feed.</span>
+          </div>
+        )}
       </div>
 
-      {/* Controls */}
-      <div style={{ display: 'flex', gap: '10px', marginTop: '20px' }}>
+      <div className="controls">
         <button
           onClick={toggleRecognition}
           disabled={!activeLocalCamera || !selectedDbCamera}
-          style={{
-            ...styles.button,
-            backgroundColor: isRunning ? '#dc3545' : '#28a745',
-            opacity: (!activeLocalCamera || !selectedDbCamera) ? 0.5 : 1
-          }}
+          className="primary"
         >
           {isRunning ? 'Stop Recognition' : 'Start Recognition'}
         </button>
-        <button
-          onClick={stopCamera}
-          style={styles.button}
-        >
+        <button onClick={stopCamera} className="secondary">
           Stop Camera
         </button>
       </div>
 
-      {/* Recognition Results */}
-      {Object.entries(recognitionResults).map(([camId, result]) => (
-        <div key={camId} style={{ marginTop: '20px', ...styles.resultCard }}>
-          <RecognitionResultBox result={result} />
-        </div>
-      ))}
+      <RecognitionResult
+        result={selectedDbCamera ? recognitionResults[selectedDbCamera.cam_id] : null}
+      />
     </div>
   );
 }
-
-function RecognitionResultBox({ result }) {
-  return (
-    <div>
-      <p><strong>Timestamp:</strong> {result.timestamp}</p>
-      {result.status === 'success' && (
-        <>
-          <p><strong>Name:</strong> {result.name || 'Unknown'}</p>
-          <p><strong>Confidence:</strong> {(result.confidence * 100).toFixed(2)}%</p>
-          <p style={{ color: result.is_recognized ? '#28a745' : '#dc3545' }}>
-            <strong>Status:</strong> {result.is_recognized ? '✓ Recognized' : '✗ Not Recognized'}
-          </p>
-        </>
-      )}
-      {result.status === 'error' && (
-        <p style={{ color: '#dc3545' }}><strong>Error:</strong> {result.message}</p>
-      )}
-    </div>
-  );
-}
-
-const styles = {
-  alert: {
-    padding: '15px',
-    marginBottom: '20px',
-    borderRadius: '4px',
-    border: '1px solid #dee2e6'
-  },
-  select: {
-    width: '100%',
-    padding: '10px',
-    borderRadius: '4px',
-    border: '1px solid #ddd',
-    fontSize: '14px',
-    marginTop: '5px'
-  },
-  videoContainer: {
-    position: 'relative',
-    aspectRatio: '16/9',
-    backgroundColor: '#000',
-    borderRadius: '8px',
-    overflow: 'hidden'
-  },
-  video: {
-    width: '100%',
-    height: '100%',
-    objectFit: 'cover'
-  },
-  button: {
-    padding: '10px 20px',
-    border: 'none',
-    borderRadius: '4px',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: '14px',
-    fontWeight: 'bold'
-  },
-  resultCard: {
-    backgroundColor: '#f9f9f9',
-    padding: '15px',
-    borderRadius: '8px',
-    border: '1px solid #ddd'
-  }
-};

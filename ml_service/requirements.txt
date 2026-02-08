@@ -24,7 +24,7 @@ pillow>=10.0.0
 
 # Vector Database
 pymilvus>=2.3.7
-marshmallow>=3.20.0
+marshmallow>=3.20.0,<4.0
 environs>=10.0.0
 
 # Utilities

@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
 const REQUIRED_FRAMES = 5;
@@ -23,6 +23,7 @@ export default function EnrollSocket() {
   const videoRef = useRef(null);
   const imgRef = useRef(null);
   const streamRef = useRef(null);
+  const autoCaptureRef = useRef(null);
 
   // Start camera
   const startCamera = useCallback(async () => {
@@ -58,6 +59,10 @@ export default function EnrollSocket() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+    }
+    if (autoCaptureRef.current) {
+      clearInterval(autoCaptureRef.current);
+      autoCaptureRef.current = null;
     }
     setVideoReady(false);
   }, []);
@@ -117,6 +122,10 @@ export default function EnrollSocket() {
 
   // Auto-capture frames
   const startAutoCapture = useCallback(() => {
+    if (!videoReady) {
+      setError('Start the camera before auto-capture.');
+      return;
+    }
     if (capturedFrames.length >= REQUIRED_FRAMES) {
       setError('Already captured all required frames');
       return;
@@ -149,8 +158,14 @@ export default function EnrollSocket() {
     }, 800); // Capture every 800ms
 
     // Stop after reasonable time
-    setTimeout(() => clearInterval(interval), REQUIRED_FRAMES * 1000);
-  }, [capturedFrames, useIpWebcam]);
+    autoCaptureRef.current = interval;
+    setTimeout(() => {
+      clearInterval(interval);
+      if (autoCaptureRef.current === interval) {
+        autoCaptureRef.current = null;
+      }
+    }, REQUIRED_FRAMES * 1000);
+  }, [capturedFrames, useIpWebcam, videoReady]);
 
   // Submit enrollment via REST API
   const handleSubmit = useCallback(async () => {
@@ -232,6 +247,20 @@ export default function EnrollSocket() {
     setMessage('');
   }, []);
 
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
+
+  useEffect(() => {
+    if (useIpWebcam) {
+      if (streamRef.current) {
+        stopCamera();
+      }
+    }
+  }, [useIpWebcam, stopCamera]);
+
   return (
     <div className="card">
       <h2>Face Enrollment</h2>
@@ -264,7 +293,7 @@ export default function EnrollSocket() {
       </label>
 
       {/* Camera Type Selection */}
-      <label className="field" style={{ flexDirection: 'row', gap: '8px', alignItems: 'center' }}>
+      <label className="field inline-field">
         <input
           type="checkbox"
           checked={useIpWebcam}
@@ -296,7 +325,11 @@ export default function EnrollSocket() {
             alt="IP Camera"
             className="video"
             crossOrigin="anonymous"
-            onError={() => setError('Failed to load IP camera stream')}
+            onError={() => {
+              setError('Failed to load IP camera stream');
+              setVideoReady(false);
+            }}
+            onLoad={() => setVideoReady(true)}
           />
         ) : (
           <video
@@ -311,7 +344,7 @@ export default function EnrollSocket() {
       {/* Camera Controls */}
       <div className="actions">
         {!videoReady ? (
-          <button onClick={startCamera} disabled={isSubmitting}>
+          <button onClick={startCamera} disabled={isSubmitting} className="primary">
             Start Camera
           </button>
         ) : (
@@ -337,51 +370,22 @@ export default function EnrollSocket() {
       </div>
 
       {/* Progress */}
-      {progress && (
-        <div style={{ marginTop: '12px', color: '#38bdf8', fontSize: '14px' }}>
-          {progress}
-        </div>
-      )}
+      {progress && <div className="progress-text">{progress}</div>}
 
       {/* Captured Frames Preview */}
       {capturedFrames.length > 0 && (
-        <div style={{ marginTop: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <div className="frame-preview">
+          <div className="frame-header">
             <strong>Captured Frames: {capturedFrames.length}/{REQUIRED_FRAMES}</strong>
             <button onClick={clearFrames} className="ghost" disabled={isSubmitting}>
               Clear All
             </button>
           </div>
-          <div style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', 
-            gap: '8px' 
-          }}>
+          <div className="frame-grid">
             {capturedFrames.map((frame, idx) => (
-              <div key={idx} style={{ 
-                position: 'relative',
-                aspectRatio: '1',
-                border: '1px solid #334155',
-                borderRadius: '4px',
-                overflow: 'hidden'
-              }}>
-                <img 
-                  src={frame} 
-                  alt={`Frame ${idx + 1}`}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-                <div style={{
-                  position: 'absolute',
-                  top: '4px',
-                  right: '4px',
-                  background: '#000',
-                  color: '#fff',
-                  padding: '2px 6px',
-                  borderRadius: '4px',
-                  fontSize: '10px'
-                }}>
-                  {idx + 1}
-                </div>
+              <div key={idx} className="frame-item">
+                <img src={frame} alt={`Frame ${idx + 1}`} />
+                <span className="frame-index">{idx + 1}</span>
               </div>
             ))}
           </div>
@@ -389,7 +393,7 @@ export default function EnrollSocket() {
       )}
 
       {/* Submit */}
-      <div className="actions" style={{ marginTop: '16px' }}>
+      <div className="actions">
         <button
           onClick={handleSubmit}
           disabled={isSubmitting || capturedFrames.length < REQUIRED_FRAMES || !emp_id.trim() || !name.trim()}

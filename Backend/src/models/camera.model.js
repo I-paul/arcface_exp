@@ -1,4 +1,5 @@
 const pool = require('../DB/config');
+const { randomUUID } = require('crypto');
 
 /**
  * Get all cameras
@@ -56,17 +57,48 @@ const createCamera = async (req, res) => {
 		}
 
 		const query = `
-			INSERT INTO cameras (site_id, site_name, camera_label, created_at)
-			VALUES ($1, $2, $3, NOW())
+			INSERT INTO cameras (cam_id, site_id, site_name, camera_label, created_at)
+			VALUES ($1, $2, $3, $4, NOW())
 			RETURNING cam_id, site_id, site_name, camera_label, created_at;
 		`;
 
-		const { rows } = await pool.query(query, [site_id, site_name || null, camera_label]);
+		const cam_id = randomUUID();
+		const { rows } = await pool.query(query, [cam_id, site_id, site_name || null, camera_label]);
 
 		return res.status(201).json(rows[0]);
 	} catch (error) {
 		console.error('[ERROR] Failed to create camera:', error.message);
 		return res.status(500).json({ message: 'Failed to create camera' });
+	}
+};
+
+/**
+ * Register camera (edge agent first boot)
+ * Returns only cam_id
+ */
+const registerCamera = async (req, res) => {
+	try {
+		const { site_id, site_name, camera_label } = req.body;
+
+		if (!site_id || !camera_label) {
+			return res.status(400).json({
+				message: 'Missing required fields: site_id and camera_label'
+			});
+		}
+
+		const query = `
+			INSERT INTO cameras (cam_id, site_id, site_name, camera_label, created_at)
+			VALUES ($1, $2, $3, $4, NOW())
+			RETURNING cam_id;
+		`;
+
+		const cam_id = randomUUID();
+		const { rows } = await pool.query(query, [cam_id, site_id, site_name || null, camera_label]);
+
+		return res.status(201).json({ cam_id: rows[0].cam_id });
+	} catch (error) {
+		console.error('[ERROR] Failed to register camera:', error.message);
+		return res.status(500).json({ message: 'Failed to register camera' });
 	}
 };
 
@@ -151,6 +183,7 @@ module.exports = {
 	getAllCameras,
 	getCameraById,
 	createCamera,
+	registerCamera,
 	updateCamera,
 	deleteCamera
 };
