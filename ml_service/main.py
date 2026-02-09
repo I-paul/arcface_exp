@@ -53,6 +53,7 @@ recognition_pipeline = None
 # Pydantic models
 class RecognitionResponse(BaseModel):
     name: Optional[str]
+    person_id: Optional[str]
     confidence: float
     is_recognized: bool
     message: str
@@ -256,7 +257,8 @@ async def recognize_face(
         
         if result is not None and result.get('confidence', 0) >= 0.65:
             return RecognitionResponse(
-                name=result.get('name'),
+                name=None,
+                person_id=result.get('person_id'),
                 confidence=float(result.get('confidence', 0)),
                 is_recognized=True,
                 message="Face recognized successfully"
@@ -264,6 +266,7 @@ async def recognize_face(
         else:
             return RecognitionResponse(
                 name=None,
+                person_id=None,
                 confidence=float(result.get('confidence', 0)) if result is not None else 0.0,
                 is_recognized=False,
                 message="Unknown face"
@@ -326,7 +329,7 @@ async def enroll_person(
         centroid = embedding_manager.compute_centroid(embeddings)
         
         # Store in Milvus
-        person_id = milvus_client.insert_face(name, centroid)
+        person_id = milvus_client.insert_face(centroid)
         
         logger.info(f"Successfully enrolled {name} with {len(embeddings)} images")
         

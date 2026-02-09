@@ -1,15 +1,11 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
-import { io } from 'socket.io-client';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
 const REQUIRED_FRAMES = 5;
 
 export default function EnrollSocket() {
-  // Socket state
-  const [socket, setSocket] = useState(null);
-  const [isConnected, setIsConnected] = useState(false);
-
   // Enrollment state
+  const [emp_id, setEmpId] = useState('');
   const [name, setName] = useState('');
   const [useIpWebcam, setUseIpWebcam] = useState(false);
   const [ipUrl, setIpUrl] = useState('http://10.1.31.201:8080/video');
@@ -27,65 +23,7 @@ export default function EnrollSocket() {
   const videoRef = useRef(null);
   const imgRef = useRef(null);
   const streamRef = useRef(null);
-
-  // Initialize Socket.IO connection
-  useEffect(() => {
-    const socketInstance = io(BACKEND_URL, {
-      transports: ['websocket', 'polling'],
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000
-    });
-
-    socketInstance.on('connect', () => {
-      console.log('Connected to server');
-      setIsConnected(true);
-      setError('');
-    });
-
-    socketInstance.on('disconnect', () => {
-      console.log('Disconnected from server');
-      setIsConnected(false);
-    });
-
-    socketInstance.on('connect_error', (err) => {
-      console.error('Connection error:', err);
-      setError('Failed to connect to server');
-      setIsConnected(false);
-    });
-
-    // Listen for enrollment progress
-    socketInstance.on('enrollment-progress', (data) => {
-      setProgress(`Captured ${data.captured} of ${data.total} frames`);
-    });
-
-    // Listen for enrollment success
-    socketInstance.on('enrollment-success', (data) => {
-      setMessage(data.message || 'Enrollment successful!');
-      setError('');
-      setIsSubmitting(false);
-      // Reset form
-      setName('');
-      setCapturedFrames([]);
-      setProgress('');
-    });
-
-    // Listen for enrollment errors
-    socketInstance.on('enrollment-error', (data) => {
-      setError(data.message || 'Enrollment failed');
-      setIsSubmitting(false);
-      setProgress('');
-    });
-
-    setSocket(socketInstance);
-
-    return () => {
-      if (socketInstance) {
-        socketInstance.disconnect();
-      }
-      stopCamera();
-    };
-  }, []);
+  const autoCaptureRef = useRef(null);
 
   // Start camera
   const startCamera = useCallback(async () => {
@@ -121,6 +59,10 @@ export default function EnrollSocket() {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+    }
+    if (autoCaptureRef.current) {
+      clearInterval(autoCaptureRef.current);
+      autoCaptureRef.current = null;
     }
     setVideoReady(false);
   }, []);
@@ -180,6 +122,10 @@ export default function EnrollSocket() {
 
   // Auto-capture frames
   const startAutoCapture = useCallback(() => {
+    if (!videoReady) {
+      setError('Start the camera before auto-capture.');
+      return;
+    }
     if (capturedFrames.length >= REQUIRED_FRAMES) {
       setError('Already captured all required frames');
       return;
@@ -212,13 +158,19 @@ export default function EnrollSocket() {
     }, 800); // Capture every 800ms
 
     // Stop after reasonable time
-    setTimeout(() => clearInterval(interval), REQUIRED_FRAMES * 1000);
-  }, [capturedFrames, useIpWebcam]);
+    autoCaptureRef.current = interval;
+    setTimeout(() => {
+      clearInterval(interval);
+      if (autoCaptureRef.current === interval) {
+        autoCaptureRef.current = null;
+      }
+    }, REQUIRED_FRAMES * 1000);
+  }, [capturedFrames, useIpWebcam, videoReady]);
 
-  // Submit enrollment
-  const handleSubmit = useCallback(() => {
-    if (!socket || !isConnected) {
-      setError('Not connected to server');
+  // Submit enrollment via REST API
+  const handleSubmit = useCallback(async () => {
+    if (!emp_id.trim()) {
+      setError('Employee ID is required');
       return;
     }
 
@@ -237,12 +189,55 @@ export default function EnrollSocket() {
     setMessage('');
     setProgress('Submitting enrollment...');
 
-    // Send enrollment data to backend
-    socket.emit('enroll-submit', {
-      name: name.trim(),
-      images: capturedFrames
-    });
-  }, [socket, isConnected, name, capturedFrames]);
+    try {
+      // Convert base64 images to File objects
+      const files = capturedFrames.map((base64, index) => {
+        const arr = base64.split(',');
+        const mime = arr[0].match(/:(.*?);/)[1];
+        const bstr = atob(arr[1]);
+        const n = bstr.length;
+        const u8arr = new Uint8Array(n);
+        for (let i = 0; i < n; i++) {
+          u8arr[i] = bstr.charCodeAt(i);
+        }
+        return new File([u8arr], `frame-${index}.jpg`, { type: mime });
+      });
+
+      // Create FormData
+      const formData = new FormData();
+      formData.append('emp_id', emp_id.trim());
+      formData.append('name', name.trim());
+      files.forEach(file => {
+        formData.append('files', file);
+      });
+
+      // Submit to backend
+      const response = await fetch(`${BACKEND_URL}/api/enroll`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (response.ok) {
+        setMessage(`✓ ${result.message}`);
+        setProgress('');
+        // Reset form
+        setEmpId('');
+        setName('');
+        setCapturedFrames([]);
+        stopCamera();
+        setTimeout(() => setMessage(''), 5000);
+      } else {
+        setError(result.message || 'Enrollment failed');
+      }
+    } catch (err) {
+      setError('Failed to submit enrollment: ' + err.message);
+      console.error('Enrollment error:', err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [emp_id, name, capturedFrames, stopCamera]);
 
   // Clear captured frames
   const clearFrames = useCallback(() => {
@@ -252,24 +247,42 @@ export default function EnrollSocket() {
     setMessage('');
   }, []);
 
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
+
+  useEffect(() => {
+    if (useIpWebcam) {
+      if (streamRef.current) {
+        stopCamera();
+      }
+    }
+  }, [useIpWebcam, stopCamera]);
+
   return (
     <div className="card">
-      <h2>Face Enrollment (Socket.IO)</h2>
+      <h2>Face Enrollment</h2>
       <p className="muted">
         Capture {REQUIRED_FRAMES} frames from different angles for enrollment
       </p>
 
-      {/* Connection Status */}
-      <div style={{ marginBottom: '1rem' }}>
-        <strong>Connection: </strong>
-        <span style={{ color: isConnected ? '#10b981' : '#ef4444' }}>
-          {isConnected ? '🟢 Connected' : '🔴 Disconnected'}
-        </span>
-      </div>
+      {/* Employee ID Input */}
+      <label className="field">
+        <span>Employee ID *</span>
+        <input
+          type="text"
+          value={emp_id}
+          onChange={(e) => setEmpId(e.target.value)}
+          placeholder="Enter employee ID (e.g., EMP-001)"
+          disabled={isSubmitting}
+        />
+      </label>
 
       {/* Name Input */}
       <label className="field">
-        <span>Full Name</span>
+        <span>Full Name *</span>
         <input
           type="text"
           value={name}
@@ -280,7 +293,7 @@ export default function EnrollSocket() {
       </label>
 
       {/* Camera Type Selection */}
-      <label className="field" style={{ flexDirection: 'row', gap: '8px', alignItems: 'center' }}>
+      <label className="field inline-field">
         <input
           type="checkbox"
           checked={useIpWebcam}
@@ -312,7 +325,11 @@ export default function EnrollSocket() {
             alt="IP Camera"
             className="video"
             crossOrigin="anonymous"
-            onError={() => setError('Failed to load IP camera stream')}
+            onError={() => {
+              setError('Failed to load IP camera stream');
+              setVideoReady(false);
+            }}
+            onLoad={() => setVideoReady(true)}
           />
         ) : (
           <video
@@ -327,7 +344,7 @@ export default function EnrollSocket() {
       {/* Camera Controls */}
       <div className="actions">
         {!videoReady ? (
-          <button onClick={startCamera} disabled={isSubmitting}>
+          <button onClick={startCamera} disabled={isSubmitting} className="primary">
             Start Camera
           </button>
         ) : (
@@ -353,51 +370,22 @@ export default function EnrollSocket() {
       </div>
 
       {/* Progress */}
-      {progress && (
-        <div style={{ marginTop: '12px', color: '#38bdf8', fontSize: '14px' }}>
-          {progress}
-        </div>
-      )}
+      {progress && <div className="progress-text">{progress}</div>}
 
       {/* Captured Frames Preview */}
       {capturedFrames.length > 0 && (
-        <div style={{ marginTop: '16px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+        <div className="frame-preview">
+          <div className="frame-header">
             <strong>Captured Frames: {capturedFrames.length}/{REQUIRED_FRAMES}</strong>
             <button onClick={clearFrames} className="ghost" disabled={isSubmitting}>
               Clear All
             </button>
           </div>
-          <div style={{ 
-            display: 'grid', 
-            gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', 
-            gap: '8px' 
-          }}>
+          <div className="frame-grid">
             {capturedFrames.map((frame, idx) => (
-              <div key={idx} style={{ 
-                position: 'relative',
-                aspectRatio: '1',
-                border: '1px solid #334155',
-                borderRadius: '4px',
-                overflow: 'hidden'
-              }}>
-                <img 
-                  src={frame} 
-                  alt={`Frame ${idx + 1}`}
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-                <div style={{
-                  position: 'absolute',
-                  top: '4px',
-                  right: '4px',
-                  background: '#000',
-                  color: '#fff',
-                  padding: '2px 6px',
-                  borderRadius: '4px',
-                  fontSize: '10px'
-                }}>
-                  {idx + 1}
-                </div>
+              <div key={idx} className="frame-item">
+                <img src={frame} alt={`Frame ${idx + 1}`} />
+                <span className="frame-index">{idx + 1}</span>
               </div>
             ))}
           </div>
@@ -405,10 +393,10 @@ export default function EnrollSocket() {
       )}
 
       {/* Submit */}
-      <div className="actions" style={{ marginTop: '16px' }}>
+      <div className="actions">
         <button
           onClick={handleSubmit}
-          disabled={!isConnected || isSubmitting || capturedFrames.length < REQUIRED_FRAMES || !name.trim()}
+          disabled={isSubmitting || capturedFrames.length < REQUIRED_FRAMES || !emp_id.trim() || !name.trim()}
           className="primary"
         >
           {isSubmitting ? 'Enrolling...' : 'Submit Enrollment'}
@@ -423,6 +411,7 @@ export default function EnrollSocket() {
       <div style={{ marginTop: '16px', padding: '12px', background: '#0b1222', borderRadius: '8px', fontSize: '13px' }}>
         <strong>Instructions:</strong>
         <ul style={{ margin: '8px 0', paddingLeft: '20px', color: '#94a3b8' }}>
+          <li>Enter Employee ID and Full Name</li>
           <li>Start the camera and ensure face is clearly visible</li>
           <li>Capture {REQUIRED_FRAMES} frames from different angles (front, left, right)</li>
           <li>Use "Auto-Capture All" to capture frames automatically</li>

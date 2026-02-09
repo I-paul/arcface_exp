@@ -1,0 +1,6 @@
+camera:
+  cam_id: null
+  stream_url: http://10.1.31.201:8080/video
+
+backend:
+  api_url: http://localhost:3000

@@ -1,12 +1,12 @@
 const { Worker } = require('bullmq');
-const fs = require('fs');
 const axios = require('axios');
 const FormData = require('form-data');
 const dotenv = require('dotenv');
+const pool = require('../DB/config');
 
 dotenv.config();
 
-const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const ML_SERVICE_URL = process.env.ML_SERVICE_URL ;
 
 const worker = new Worker(
 	'face-recognition',
@@ -14,20 +14,25 @@ const worker = new Worker(
 		console.log(`[WORKER] Processing job ${job.id}...`);
 		const startTime = Date.now();
 		
-		const { imagePath, originalName } = job.data;
+		const { imageBase64, originalName, imagePath } = job.data;
 
 		try {
 			// Update progress
 			await job.updateProgress(10);
 
-			// Check if file exists
-			if (!fs.existsSync(imagePath)) {
-				throw new Error(`Image file not found: ${imagePath}`);
-			}
-
 			// Create form data
 			const form = new FormData();
-			form.append('file', fs.createReadStream(imagePath), originalName);
+			if (imageBase64) {
+				const buffer = Buffer.from(imageBase64, 'base64');
+				form.append('file', buffer, {
+					filename: originalName || 'frame.jpg',
+					contentType: 'image/jpeg'
+				});
+			} else if (imagePath) {
+				throw new Error(`Image file not found: ${imagePath}`);
+			} else {
+				throw new Error('No image data provided');
+			}
 
 			await job.updateProgress(30);
 
@@ -38,13 +43,19 @@ const worker = new Worker(
 				timeout: 20000,
 			});
 
-			await job.updateProgress(80);
-
-			// Cleanup temp file
-			if (fs.existsSync(imagePath)) {
-				fs.unlinkSync(imagePath);
-				console.log(`[WORKER] Cleaned up temp file: ${imagePath}`);
+			if (data?.is_recognized && data?.person_id) {
+				try {
+					const query = 'SELECT name FROM employees WHERE milvus_id = $1';
+					const { rows } = await pool.query(query, [data.person_id]);
+					if (rows.length) {
+						data.name = rows[0].name;
+					}
+				} catch (lookupErr) {
+					console.error('[WORKER] Failed to resolve name:', lookupErr.message);
+				}
 			}
+
+			await job.updateProgress(80);
 
 			await job.updateProgress(100);
 
@@ -54,16 +65,6 @@ const worker = new Worker(
 
 			return data;
 		} catch (error) {
-			// Cleanup temp file on error
-			if (imagePath && fs.existsSync(imagePath)) {
-				try {
-					fs.unlinkSync(imagePath);
-					console.log(`[WORKER] Cleaned up temp file after error: ${imagePath}`);
-				} catch (cleanupErr) {
-					console.error(`[WORKER] Failed to cleanup file: ${cleanupErr.message}`);
-				}
-			}
-
 			const errorMessage = error.response?.data?.detail || error.message || 'Recognition failed';
 			console.error(`[WORKER] Job ${job.id} failed:`, errorMessage);
 			throw new Error(errorMessage);
