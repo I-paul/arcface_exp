@@ -1,248 +1,144 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react';
-import RecognitionResult from './RecognitionResult';
+import React, { useState, useEffect } from 'react';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
-const RECOGNITION_INTERVAL = 2000; // ms
+
+const emptyFeed = {
+  label: '',
+  streamUrl: '',
+  cam_id: ''
+};
 
 export default function MultiCamRecognition({ cameras: dbCameras = [], isCamerasLoaded = true }) {
-  const [availableDevices, setAvailableDevices] = useState([]);
-  const [recognitionResults, setRecognitionResults] = useState({});
-  const [selectedDbCamera, setSelectedDbCamera] = useState(null);
-  const [activeLocalCamera, setActiveLocalCamera] = useState(null);
-  const [isRunning, setIsRunning] = useState(false);
+  const [feeds, setFeeds] = useState([]);
+  const [draft, setDraft] = useState(emptyFeed);
+  const [attendanceByCam, setAttendanceByCam] = useState({});
+  const [employeeById, setEmployeeById] = useState({});
   const [error, setError] = useState('');
-  const [status, setStatus] = useState('');
-  const [videoReady, setVideoReady] = useState(false);
 
-  const videoRef = useRef(null);
-  const streamRef = useRef(null);
-  const timerRef = useRef(null);
-
-  // Load available devices
   useEffect(() => {
-    const loadDevices = async () => {
+    let isMounted = true;
+
+    const fetchEmployees = async () => {
       try {
-        if (!navigator.mediaDevices?.enumerateDevices) {
-          setError('Camera access is not supported in this browser.');
-          return;
+        const response = await fetch(`${BACKEND_URL}/api/employees`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!isMounted) return;
+        const map = {};
+        for (const emp of data || []) {
+          if (emp.emp_id) {
+            map[emp.emp_id] = emp.name || emp.emp_id;
+          }
         }
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter((d) => d.kind === 'videoinput');
-        setAvailableDevices(videoDevices);
+        setEmployeeById(map);
       } catch (err) {
-        setError('Unable to enumerate cameras. Check permissions.');
+        console.error('Failed to fetch employees:', err);
       }
     };
-    loadDevices();
+
+    const fetchAttendance = async () => {
+      try {
+        const response = await fetch(`${BACKEND_URL}/api/attendance?limit=100`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!isMounted) return;
+        const latest = {};
+        for (const event of data || []) {
+          if (!event.cam_id) continue;
+          if (!latest[event.cam_id]) {
+            latest[event.cam_id] = event;
+          }
+        }
+        setAttendanceByCam(latest);
+      } catch (err) {
+        console.error('Failed to fetch attendance:', err);
+      }
+    };
+
+    fetchEmployees();
+    fetchAttendance();
+
+    const attendanceTimer = setInterval(fetchAttendance, 2000);
+    const employeeTimer = setInterval(fetchEmployees, 30000);
 
     return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-      }
+      isMounted = false;
+      clearInterval(attendanceTimer);
+      clearInterval(employeeTimer);
     };
   }, []);
 
-  // Start camera stream
-  const startCamera = useCallback(async (deviceId) => {
-    try {
-      setError('');
-      setStatus('Starting camera...');
-
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-      }
-
-      const constraints = deviceId
-        ? { video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false }
-        : { video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = async () => {
-          try {
-            await videoRef.current.play();
-            setVideoReady(true);
-            setStatus('Camera ready');
-          } catch (playError) {
-            setError('Unable to play camera stream. Please allow autoplay.');
-          }
-        };
-        setActiveLocalCamera(deviceId);
-        setStatus('Camera started');
-      } else {
-        setError('Video element not available. Please reload the page.');
-      }
-    } catch (err) {
-      setError(`Failed to access camera: ${err.message}`);
-      setStatus('');
-    }
-  }, []);
-
-  // Stop camera stream
-  const stopCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-    setActiveLocalCamera(null);
-    setIsRunning(false);
-    setVideoReady(false);
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    setStatus('Camera stopped');
-  }, []);
-
-  // Capture frame
-  const captureFrame = useCallback(() => {
-    if (!videoRef.current) return null;
-    if (!videoRef.current.videoWidth) return null;
-    const canvas = document.createElement('canvas');
-    canvas.width = videoRef.current.videoWidth;
-    canvas.height = videoRef.current.videoHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(videoRef.current, 0, 0);
-    return canvas.toDataURL('image/jpeg', 0.9);
-  }, []);
-
-  // Convert base64 to blob then to File
-  const base64ToFile = (base64, filename = 'frame.jpg') => {
-    const arr = base64.split(',');
-    const mime = arr[0].match(/:(.*?);/)[1];
-    const bstr = atob(arr[1]);
-    const n = bstr.length;
-    const u8arr = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      u8arr[i] = bstr.charCodeAt(i);
-    }
-    return new File([u8arr], filename, { type: mime });
-  };
-
-  // Send frame for recognition
-  const sendFrameForRecognition = useCallback(async () => {
-    const imageData = captureFrame();
-    if (!imageData || !selectedDbCamera) return;
-
-    try {
-      const file = base64ToFile(imageData);
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('cam_id', selectedDbCamera.cam_id);
-      formData.append('site_id', selectedDbCamera.site_id || '');
-
-      const response = await fetch(`${BACKEND_URL}/api/recognize`, {
-        method: 'POST',
-        body: formData
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        setStatus(`Job queued: ${result.job_id}`);
-        
-        // Poll for job result
-        const pollJob = async () => {
-          try {
-            const statusResponse = await fetch(`${BACKEND_URL}/api/job/${result.job_id}`);
-            const jobData = await statusResponse.json();
-
-            if (jobData.status === 'completed') {
-              const recognitionResult = jobData.result;
-              setRecognitionResults(prev => ({
-                ...prev,
-                [selectedDbCamera.cam_id]: {
-                  name: recognitionResult.name,
-                  confidence: recognitionResult.confidence,
-                  is_recognized: recognitionResult.is_recognized,
-                  timestamp: new Date().toLocaleTimeString(),
-                  status: 'success'
-                }
-              }));
-            } else if (jobData.status === 'failed') {
-              setRecognitionResults(prev => ({
-                ...prev,
-                [selectedDbCamera.cam_id]: {
-                  message: jobData.error || 'Recognition failed',
-                  timestamp: new Date().toLocaleTimeString(),
-                  status: 'error'
-                }
-              }));
-            } else {
-              // Still processing, poll again
-              setTimeout(pollJob, 1000);
-            }
-          } catch (err) {
-            console.error('Error polling job status:', err);
-          }
-        };
-
-        // Start polling after a short delay
-        setTimeout(pollJob, 500);
-      } else {
-        setError('Failed to send frame for recognition');
-      }
-    } catch (err) {
-      setError(`Recognition error: ${err.message}`);
-    }
-  }, [captureFrame, selectedDbCamera]);
-
-  // Toggle recognition
-  const toggleRecognition = useCallback(() => {
-    if (!activeLocalCamera || !selectedDbCamera) {
-      setError('Please select a camera and a database camera');
+  const addFeed = () => {
+    if (!draft.streamUrl || !draft.cam_id) {
+      setError('Stream URL and database camera are required.');
       return;
     }
 
-    if (isRunning) {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
+    const label = draft.label || `Camera ${feeds.length + 1}`;
+    setFeeds((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        label,
+        streamUrl: draft.streamUrl,
+        cam_id: draft.cam_id
       }
-      setIsRunning(false);
-    } else {
-      setIsRunning(true);
-      timerRef.current = setInterval(() => {
-        sendFrameForRecognition();
-      }, RECOGNITION_INTERVAL);
-      // Send first frame immediately
-      sendFrameForRecognition();
+    ]);
+
+    setDraft(emptyFeed);
+    setError('');
+  };
+
+  const removeFeed = (id) => {
+    setFeeds((prev) => prev.filter((feed) => feed.id !== id));
+  };
+
+  const renderResult = (camId) => {
+    const event = attendanceByCam[camId];
+    if (!event) {
+      return <p className="muted">Waiting for attendance event...</p>;
     }
-  }, [isRunning, activeLocalCamera, selectedDbCamera, sendFrameForRecognition]);
+
+    const name = employeeById[event.emp_id] || event.emp_id || 'Unknown';
+    const time = event.event_time ? new Date(event.event_time).toLocaleTimeString() : '--';
+    const score = event.similarity_score !== null && event.similarity_score !== undefined
+      ? `${(event.similarity_score * 100).toFixed(1)}%`
+      : 'n/a';
+
+    return (
+      <div className="recognition-result success recognized">
+        <div className="result-header">
+          <span className="result-status recognized-status">✓ Recognized</span>
+          <span className="result-time">{time}</span>
+        </div>
+        <div className="result-content">
+          <div className="result-row">
+            <span className="result-label">Name:</span>
+            <span className="result-value name-value">{name}</span>
+          </div>
+          <div className="result-row">
+            <span className="result-label">Action:</span>
+            <span className="result-value">{event.action}</span>
+          </div>
+          <div className="result-row">
+            <span className="result-label">Confidence:</span>
+            <span className="result-value confidence-value">{score}</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="card wide">
       <div className="header-row">
         <div>
-          <h2>🎥 Live Face Recognition</h2>
-          <p className="muted">Stream a local camera and match against registered cameras.</p>
-        </div>
-        <div className="status-info">
-          <div className="status-item">
-            <span className={`status-badge ${isRunning ? 'connected' : 'offline'}`}>
-              {isRunning ? 'Running' : 'Idle'}
-            </span>
-            <span>{activeLocalCamera ? 'Camera active' : 'No active camera'}</span>
-          </div>
-          <div className="status-item">
-            <span className={`status-badge ${selectedDbCamera ? 'healthy' : 'offline'}`}>
-              {selectedDbCamera ? 'Linked' : 'Not linked'}
-            </span>
-            <span>{selectedDbCamera ? selectedDbCamera.camera_label : 'Select a DB camera'}</span>
-          </div>
+          <h2>🎥 Live Camera Feeds</h2>
+          <p className="muted">Add stream URLs locally to display feeds and latest recognition results.</p>
         </div>
       </div>
 
       {error && <div className="error">{error}</div>}
-      {status && <div className="success">{status}</div>}
 
       {!isCamerasLoaded && (
         <div className="empty-state">
@@ -253,33 +149,28 @@ export default function MultiCamRecognition({ cameras: dbCameras = [], isCameras
 
       <div className="form-grid">
         <label className="field">
-          <span>Local Camera</span>
-          <select
-            value={activeLocalCamera || ''}
-            onChange={(e) => {
-              if (e.target.value && !isRunning) {
-                startCamera(e.target.value);
-              }
-            }}
-            disabled={isRunning}
-          >
-            <option value="">Select a camera</option>
-            {availableDevices.map((device) => (
-              <option key={device.deviceId} value={device.deviceId}>
-                {device.label || `Camera ${device.deviceId.substring(0, 8)}`}
-              </option>
-            ))}
-          </select>
+          <span>Label</span>
+          <input
+            type="text"
+            value={draft.label}
+            onChange={(e) => setDraft((prev) => ({ ...prev, label: e.target.value }))}
+            placeholder="Front Gate"
+          />
         </label>
-
         <label className="field">
-          <span>Associated Database Camera</span>
+          <span>Stream URL</span>
+          <input
+            type="text"
+            value={draft.streamUrl}
+            onChange={(e) => setDraft((prev) => ({ ...prev, streamUrl: e.target.value }))}
+            placeholder="http://192.168.x.x:8080/video"
+          />
+        </label>
+        <label className="field">
+          <span>Database Camera</span>
           <select
-            value={selectedDbCamera?.cam_id || ''}
-            onChange={(e) => {
-              const cam = dbCameras.find(c => c.cam_id === e.target.value);
-              setSelectedDbCamera(cam || null);
-            }}
+            value={draft.cam_id}
+            onChange={(e) => setDraft((prev) => ({ ...prev, cam_id: e.target.value }))}
             disabled={!isCamerasLoaded}
           >
             <option value="">Select database camera</option>
@@ -290,40 +181,41 @@ export default function MultiCamRecognition({ cameras: dbCameras = [], isCameras
             ))}
           </select>
         </label>
+        <div className="controls">
+          <button onClick={addFeed} className="primary">
+            Add Feed
+          </button>
+        </div>
       </div>
 
-      <div className="video-container">
-        <video
-          ref={videoRef}
-          className="video-feed"
-          autoPlay
-          playsInline
-          muted
-        />
-        {!videoReady && (
-          <div className="video-placeholder">
-            <p>Camera preview will appear here</p>
-            <span>Select a local camera to start the feed.</span>
+      {feeds.length === 0 && (
+        <div className="empty-state">
+          <p>No camera feeds added yet.</p>
+          <p className="muted">Add a stream URL and link it to a registered camera.</p>
+        </div>
+      )}
+
+      <div className="cameras-grid">
+        {feeds.map((feed) => (
+          <div key={feed.id} className="camera-card">
+            <div className="camera-card-header">
+              <h3>{feed.label}</h3>
+              <button className="close-btn" onClick={() => removeFeed(feed.id)}>
+                ✕
+              </button>
+            </div>
+            <div className="video-container">
+              <img
+                src={feed.streamUrl}
+                alt={feed.label}
+                className="video-feed"
+                crossOrigin="anonymous"
+              />
+            </div>
+            {renderResult(feed.cam_id)}
           </div>
-        )}
+        ))}
       </div>
-
-      <div className="controls">
-        <button
-          onClick={toggleRecognition}
-          disabled={!activeLocalCamera || !selectedDbCamera}
-          className="primary"
-        >
-          {isRunning ? 'Stop Recognition' : 'Start Recognition'}
-        </button>
-        <button onClick={stopCamera} className="secondary">
-          Stop Camera
-        </button>
-      </div>
-
-      <RecognitionResult
-        result={selectedDbCamera ? recognitionResults[selectedDbCamera.cam_id] : null}
-      />
     </div>
   );
 }

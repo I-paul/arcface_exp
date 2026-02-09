@@ -27,7 +27,8 @@ const path = require('path');
 
 // Use OS temp directory for temporary file storage
 const tempDir = path.join(os.tmpdir(), 'face-recognition-temp');
-const upload = multer({ dest: tempDir });
+const uploadDisk = multer({ dest: tempDir });
+const uploadMemory = multer({ storage: multer.memoryStorage() });
 
 const router = express.Router();
 
@@ -45,8 +46,8 @@ router.get('/employees/:emp_id', getEmployeeById);
 router.delete('/employees/:emp_id', deleteEmployee);
 
 // ====== FACE RECOGNITION & ENROLLMENT ======
-router.post('/enroll', upload.array('files', 5), enrollEmployee);
-router.post('/recognize', upload.single('file'), recognizeFace);
+router.post('/enroll', uploadDisk.array('files', 5), enrollEmployee);
+router.post('/recognize', uploadMemory.single('file'), recognizeFace);
 
 // ====== JOB STATUS ======
 router.get('/job/:jobId', getJobStatus);

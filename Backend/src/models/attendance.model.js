@@ -20,6 +20,24 @@ const recordAttendanceEvent = async (req, res) => {
 			});
 		}
 
+		const cooldownQuery = `
+			SELECT event_time
+			FROM attendance_events
+			WHERE emp_id = $1
+			ORDER BY event_time DESC
+			LIMIT 1;
+		`;
+		const { rows: cooldownRows } = await pool.query(cooldownQuery, [emp_id]);
+		if (cooldownRows.length) {
+			const lastEventTime = new Date(cooldownRows[0].event_time).getTime();
+			const now = Date.now();
+			if (now - lastEventTime < 2 * 60 * 1000) {
+				return res.status(429).json({
+					message: 'Attendance cooldown active. Try again later.'
+				});
+			}
+		}
+
 		let resolvedSiteId = site_id || null;
 		if (!resolvedSiteId) {
 			const siteQuery = 'SELECT site_id FROM cameras WHERE cam_id = $1';

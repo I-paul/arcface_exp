@@ -4,7 +4,6 @@ const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
 const faceQueue = require('../queues/face.queue');
-const { recordAttendanceEvent } = require('./attendance.model');
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL;
 
 
@@ -101,10 +100,12 @@ const recognizeFace = async (req, res) => {
 
 		const { cam_id, site_id } = req.body;
 
+		const imageBase64 = req.file.buffer.toString('base64');
+
 		// Add job to queue
 		const job = await faceQueue.add('recognize-face', {
-			imagePath: req.file.path,
-			originalName: req.file.originalname,
+			imageBase64,
+			originalName: req.file.originalname || 'frame.jpg',
 			requestTime: new Date().toISOString(),
 			cam_id: cam_id || null,
 			site_id: site_id || null,
@@ -120,16 +121,6 @@ const recognizeFace = async (req, res) => {
 			status_url: `/api/job/${job.id}`,
 		});
 	} catch (error) {
-		// Cleanup temp file on error
-		try {
-			if (req.file && fs.existsSync(req.file.path)) {
-				fs.unlinkSync(req.file.path);
-				console.log(`[CLEANUP] Deleted temp file after queue error: ${req.file.path}`);
-			}
-		} catch (cleanupErr) {
-			console.error('[CLEANUP] Failed to delete temp file:', cleanupErr.message);
-		}
-
 		console.error('[ERROR] Failed to queue recognition job:', error.message);
 		return res.status(500).json({ message: 'Failed to queue recognition job' });
 	}

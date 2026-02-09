@@ -11,7 +11,7 @@ const faceQueue = new Queue('face-recognition', {
 	defaultJobOptions: {
 		attempts: 2,
 		backoff: { type: 'fixed', delay: 2000 },
-		removeOnComplete: true,
+		removeOnComplete: { age: 120, count: 500 },
 		removeOnFail: false,
 	},
 });
