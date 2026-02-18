@@ -81,9 +81,7 @@ class HealthResponse(BaseModel):
     milvus_connected: bool
     runtime_providers: Optional[dict] = None
 
-# ==========================
 # STARTUP & SHUTDOWN
-# ==========================
 @app.on_event("startup")
 async def startup_event():
     """Initialize ML models and connections on startup"""
@@ -99,14 +97,14 @@ async def startup_event():
         face_processor = FaceProcessor(force_gpu=True)  # Force GPU for production
         
         if face_processor.is_gpu_available():
-            logger.info("✓ GPU ENABLED - Recognition and Enrollment will run on GPU")
+            logger.info("GPU ENABLED - Recognition and Enrollment will run on GPU")
         else:
-            logger.error("✗ GPU NOT AVAILABLE - Service may not start correctly")
+            logger.error("GPU NOT AVAILABLE - Service may not start correctly")
         
         # Initialize Anti-Spoofing Predictor
         logger.info("Initializing Anti-Spoofing Predictor...")
         antispoof_predictor = init_predictor(use_gpu=True)
-        logger.info("✓ Anti-Spoofing model loaded (MiniFASNet ONNX)")
+        logger.info("Anti-Spoofing model loaded (MiniFASNet ONNX)")
         
         # Initialize Embedding Manager
         logger.info("Initializing Embedding Manager...")
@@ -121,7 +119,7 @@ async def startup_event():
         milvus_client = MilvusClient()
         
         logger.info("="*60)
-        logger.info("✓ ML Service started successfully!")
+        logger.info("ML Service started successfully!")
         logger.info(f"  - GPU Status: {'ENABLED' if face_processor.is_gpu_available() else 'DISABLED'}")
         logger.info(f"  - Anti-Spoofing: ENABLED")
         logger.info(f"  - Milvus Status: {'CONNECTED' if milvus_client.is_connected() else 'DISCONNECTED'}")
@@ -129,7 +127,7 @@ async def startup_event():
         
     except Exception as e:
         logger.error("="*60)
-        logger.error(f"✗ Failed to start ML Service: {str(e)}")
+        logger.error(f"Failed to start ML Service: {str(e)}")
         logger.error("="*60)
         raise
 
@@ -140,9 +138,7 @@ async def shutdown_event():
     if milvus_client:
         milvus_client.disconnect()
 
-# ==========================
 # HEALTH & STATUS
-# ==========================
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
@@ -162,9 +158,7 @@ async def root():
         "status": "running"
     }
 
-# ==========================
 # RECOGNITION
-# ==========================
 @app.post("/recognize", response_model=RecognitionResponse)
 async def recognize_face(
     file: UploadFile = File(...),
@@ -233,9 +227,7 @@ async def recognize_face(
                 largest_index = i
         face = usable_faces[largest_index]
 
-        # ========================================
         # ANTI-SPOOFING CHECK (BEFORE EMBEDDING)
-        # ========================================
         # Extract aligned face for anti-spoofing
         # InsightFace provides aligned 112x112 face in face.normed_embedding attribute
         # But we need the actual aligned image, so we'll get it from the face object
@@ -255,7 +247,7 @@ async def recognize_face(
             
             # REJECT if spoof detected
             if not antispoof_result.is_live:
-                logger.warning(f"🚫 SPOOF DETECTED - real_score: {antispoof_result.real_score:.3f}, fake_score: {antispoof_result.fake_score:.3f}")
+                logger.warning(f"SPOOF DETECTED - real_score: {antispoof_result.real_score:.3f}, fake_score: {antispoof_result.fake_score:.3f}")
                 return RecognitionResponse(
                     name=None,
                     person_id=None,
@@ -265,17 +257,14 @@ async def recognize_face(
                     liveness=liveness_info
                 )
             
-            logger.info(f"✅ LIVENESS CHECK PASSED - real_score: {antispoof_result.real_score:.3f}")
+            logger.info(f"LIVENESS CHECK PASSED - real_score: {antispoof_result.real_score:.3f}")
             
         except Exception as e:
             logger.error(f"Anti-spoof check failed: {e}")
-            # Optionally: fail open or fail closed
-            # For now, we'll continue with recognition but log the error
+            
             liveness_info = None
         
-        # ========================================
         # EMBEDDING EXTRACTION (ONLY IF LIVE)
-        # ========================================
 
         # Tracking + gating + batching
         now_ts = time.time()
@@ -338,9 +327,7 @@ async def recognize_face(
         logger.error(f"Recognition error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================
 # ENROLLMENT
-# ==========================
 @app.post("/enroll", response_model=EnrollmentResponse)
 async def enroll_person(
     name: str = Form(...),
@@ -392,7 +379,7 @@ async def enroll_person(
                     antispoof_result = antispoof_predictor.predict(face_crop)
                     
                     if not antispoof_result.is_live:
-                        logger.warning(f"🚫 Spoof detected in enrollment image - rejecting")
+                        logger.warning(f"Spoof detected in enrollment image - rejecting")
                         spoof_count += 1
                         continue
             except Exception as e:
@@ -434,9 +421,7 @@ async def enroll_person(
         logger.error(f"Enrollment error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================
 # WEBSOCKET FOR STREAMING
-# ==========================
 @app.websocket("/ws/recognize")
 async def websocket_recognize(websocket: WebSocket):
     """
@@ -629,9 +614,7 @@ async def websocket_recognize(websocket: WebSocket):
         except:
             pass
 
-# ==========================
 # COLLECTION MANAGEMENT
-# ==========================
 @app.get("/collection/stats")
 async def get_collection_stats():
     """Get statistics about the face collection"""
@@ -655,9 +638,7 @@ async def delete_person(person_id: str):
         logger.error(f"Delete error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================
 # RUN SERVER
-# ==========================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

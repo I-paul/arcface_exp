@@ -91,7 +91,7 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
     <div className="card">
       <div className="header-row">
         <div>
-          <h2>📹 Camera Management</h2>
+          <h2>Camera Management</h2>
           <p className="muted">Manage camera locations used by recognition jobs.</p>
         </div>
         <div className="controls">
@@ -99,7 +99,7 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
             className={showAddForm ? 'secondary' : 'primary'}
             onClick={() => setShowAddForm(!showAddForm)}
           >
-            {showAddForm ? '✕ Cancel' : '+ Add New Camera'}
+            {showAddForm ? 'Cancel' : '+ Add New Camera'}
           </button>
         </div>
       </div>

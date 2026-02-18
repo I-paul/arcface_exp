@@ -27,7 +27,7 @@ export default function CameraStream({
             onClick={onRemove}
             title="Remove camera"
           >
-            ✕
+            X
           </button>
         </div>
       </div>

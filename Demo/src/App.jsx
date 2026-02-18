@@ -57,19 +57,19 @@ export default function App() {
             className={tab === NAV.CAMERAS ? 'active' : ''}
             onClick={() => setTab(NAV.CAMERAS)}
           >
-            📹 Camera Management
+            Camera Management
           </button>
           <button
             className={tab === NAV.RECOGNITION ? 'active' : ''}
             onClick={() => setTab(NAV.RECOGNITION)}
           >
-            🎥 Live Recognition
+            Live Recognition
           </button>
           <button
             className={tab === NAV.ENROLL ? 'active' : ''}
             onClick={() => setTab(NAV.ENROLL)}
           >
-            ➕ Face Enrollment
+            Face Enrollment
           </button>
         </nav>
       </header>

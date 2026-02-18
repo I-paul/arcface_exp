@@ -1,7 +1,5 @@
-# ============================================
 # ML SERVICE REQUIREMENTS
 # Face Recognition API Dependencies
-# ============================================
 --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Web Framework

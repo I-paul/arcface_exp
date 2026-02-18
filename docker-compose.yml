@@ -1,8 +1,6 @@
 services:
 
-  # ============================================
   # ETCD - Milvus Metadata Storage
-  # ============================================
   etcd:
     image: quay.io/coreos/etcd:v3.5.5
     environment:
@@ -21,9 +19,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # MINIO - Milvus Object Storage
-  # ============================================
   minio:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
     environment:
@@ -40,9 +36,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # MILVUS - Vector Database
-  # ============================================
   milvus:
     image: milvusdb/milvus:v2.4.0
     command: ["milvus", "run", "standalone"]
@@ -67,9 +61,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # ATTU - Milvus GUI
-  # ============================================
   attu:
     image: zilliz/attu:latest
     ports:
@@ -81,9 +73,7 @@ services:
     depends_on:
       - milvus
 
-  # ============================================
   # REDIS - Job Queue
-  # ============================================
   redis:
     image: redis:7
     ports:
@@ -101,9 +91,7 @@ services:
       - app-network
 
 
-  # ============================================
   # POSTGRES - Primary Database
-  # ============================================
   postgres:
     image: postgres:15
     ports:
@@ -122,9 +110,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # ML SERVICE - Face Recognition API
-  # ============================================
   ml_service:
     build: ./ml_service
     ports:
@@ -145,9 +131,7 @@ services:
       - MILVUS_PORT=19530
     gpus: all
 
-  # ============================================
   # BACKEND - Express API Server
-  # ============================================
   backend:
     build: ./Backend
     ports:
@@ -175,9 +159,7 @@ services:
       - REDIS_PORT=6379
       - DB_HOST=postgres
 
-  # ============================================
   # WORKER - Face Recognition Queue Processor
-  # ============================================
   worker:
     build: ./Backend
     command: node src/workers/face.worker.js
@@ -202,16 +184,12 @@ services:
       - REDIS_PORT=6379
       - DB_HOST=postgres
 
-# ============================================
 # NETWORKS
-# ============================================
 networks:
   app-network:
     driver: bridge
 
-# ============================================
 # VOLUMES
-# ============================================
 volumes:
   ml_service_data:
   etcd_data:

@@ -220,7 +220,7 @@ export default function EnrollSocket() {
       const result = await response.json();
 
       if (response.ok) {
-        setMessage(`✓ ${result.message}`);
+        setMessage(result.message);
         setProgress('');
         // Reset form
         setEmpId('');

@@ -108,7 +108,7 @@ export default function MultiCamRecognition({ cameras: dbCameras = [], isCameras
     return (
       <div className="recognition-result success recognized">
         <div className="result-header">
-          <span className="result-status recognized-status">✓ Recognized</span>
+          <span className="result-status recognized-status">Recognized</span>
           <span className="result-time">{time}</span>
         </div>
         <div className="result-content">
@@ -133,7 +133,7 @@ export default function MultiCamRecognition({ cameras: dbCameras = [], isCameras
     <div className="card wide">
       <div className="header-row">
         <div>
-          <h2>🎥 Live Camera Feeds</h2>
+          <h2>Live Camera Feeds</h2>
           <p className="muted">Add stream URLs locally to display feeds and latest recognition results.</p>
         </div>
       </div>
@@ -201,7 +201,7 @@ export default function MultiCamRecognition({ cameras: dbCameras = [], isCameras
             <div className="camera-card-header">
               <h3>{feed.label}</h3>
               <button className="close-btn" onClick={() => removeFeed(feed.id)}>
-                ✕
+                X
               </button>
             </div>
             <div className="video-container">

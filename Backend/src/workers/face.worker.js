@@ -81,12 +81,12 @@ const worker = new Worker(
 
 // Event handlers for monitoring
 worker.on('completed', (job, result) => {
-	console.log(`[WORKER] ✅ Job ${job.id} completed successfully`);
+	console.log(`[WORKER] Job ${job.id} completed successfully`);
 	console.log(`[WORKER] Recognition result: ${result.is_recognized ? result.name : 'Unknown'} (confidence: ${result.confidence})`);
 });
 
 worker.on('failed', (job, err) => {
-	console.error(`[WORKER] ❌ Job ${job?.id} failed with error: ${err.message}`);
+	console.error(`[WORKER] Job ${job?.id} failed with error: ${err.message}`);
 	if (job) {
 		console.error(`[WORKER] Attempts: ${job.attemptsMade}/${job.opts.attempts}`);
 	}
@@ -97,11 +97,11 @@ worker.on('error', (err) => {
 });
 
 worker.on('ready', () => {
-	console.log('[WORKER] 🚀 Face recognition worker is ready and waiting for jobs');
+	console.log('[WORKER] Face recognition worker is ready and waiting for jobs');
 });
 
 worker.on('active', (job) => {
-	console.log(`[WORKER] 🔄 Processing job ${job.id}...`);
+	console.log(`[WORKER] Processing job ${job.id}...`);
 });
 
 // Graceful shutdown

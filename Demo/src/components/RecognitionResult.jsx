@@ -15,7 +15,7 @@ export default function RecognitionResult({ result }) {
     return (
       <div className="recognition-result error">
         <div className="result-header">
-          <span className="result-status error-status">✗ Error</span>
+          <span className="result-status error-status">Error</span>
           <span className="result-time">{timestamp}</span>
         </div>
         <p className="error-message">{message}</p>
@@ -27,7 +27,7 @@ export default function RecognitionResult({ result }) {
     <div className={`recognition-result success ${is_recognized ? 'recognized' : 'not-recognized'}`}>
       <div className="result-header">
         <span className={`result-status ${is_recognized ? 'recognized-status' : 'unknown-status'}`}>
-          {is_recognized ? '✓ Recognized' : '? Unknown'}
+          {is_recognized ? 'Recognized' : 'Unknown'}
         </span>
         <span className="result-time">{timestamp}</span>
       </div>

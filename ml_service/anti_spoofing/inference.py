@@ -59,7 +59,7 @@ class AntiSpoofPredictor:
         # Initialize ONNX session
         self._init_session()
         
-        logger.info(f"✅ AntiSpoofPredictor initialized with model: {model_path}")
+        logger.info(f"AntiSpoofPredictor initialized with model: {model_path}")
         logger.info(f"   GPU: {'Enabled' if use_gpu else 'Disabled'}")
     
     def _init_session(self):

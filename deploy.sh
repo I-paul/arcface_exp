@@ -1,8 +1,6 @@
 #!/bin/bash
-# ============================================
 # Quick Deployment Script
 # Face Recognition System
-# ============================================
 
 set -e
 
@@ -22,24 +20,24 @@ echo "Checking prerequisites..."
 
 # Check Docker
 if ! command -v docker &> /dev/null; then
-    echo -e "${RED}❌ Docker not found. Please install Docker first.${NC}"
+    echo -e "${RED}Docker not found. Please install Docker first.${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Docker installed${NC}"
+echo -e "${GREEN}Docker installed${NC}"
 
 # Check Docker Compose
 if ! command -v docker-compose &> /dev/null; then
-    echo -e "${RED}❌ Docker Compose not found. Please install Docker Compose first.${NC}"
+    echo -e "${RED}Docker Compose not found. Please install Docker Compose first.${NC}"
     exit 1
 fi
-echo -e "${GREEN}✓ Docker Compose installed${NC}"
+echo -e "${GREEN}Docker Compose installed${NC}"
 
 # Check GPU (optional)
 if command -v nvidia-smi &> /dev/null; then
-    echo -e "${GREEN}✓ NVIDIA GPU detected${NC}"
+    echo -e "${GREEN}NVIDIA GPU detected${NC}"
     nvidia-smi --query-gpu=name --format=csv,noheader
 else
-    echo -e "${YELLOW}⚠ No GPU detected. ML service will run on CPU (slower).${NC}"
+    echo -e "${YELLOW}No GPU detected. ML service will run on CPU (slower).${NC}"
 fi
 
 echo ""
@@ -60,7 +58,7 @@ case $choice in
         echo "Starting production deployment..."
         docker-compose -f docker-compose.prod.yml up -d
         echo ""
-        echo -e "${GREEN}✅ Services started successfully!${NC}"
+        echo -e "${GREEN}Services started successfully!${NC}"
         echo ""
         echo "Services available at:"
         echo "  - Backend API:    http://localhost:3000"
@@ -79,7 +77,7 @@ case $choice in
         docker-compose up -d
         cd ../..
         echo ""
-        echo -e "${GREEN}✅ Milvus started${NC}"
+        echo -e "${GREEN}Milvus started${NC}"
         echo ""
         echo "To run ML service locally:"
         echo "  cd ml_service"
@@ -93,7 +91,7 @@ case $choice in
         echo "Stopping all services..."
         docker-compose -f docker-compose.prod.yml down
         cd infra/milvus && docker-compose down
-        echo -e "${GREEN}✅ All services stopped${NC}"
+        echo -e "${GREEN}All services stopped${NC}"
         ;;
     4)
         echo ""
@@ -105,7 +103,7 @@ case $choice in
         echo "Rebuilding services..."
         docker-compose -f docker-compose.prod.yml build --no-cache
         docker-compose -f docker-compose.prod.yml up -d
-        echo -e "${GREEN}✅ Services rebuilt and started${NC}"
+        echo -e "${GREEN}Services rebuilt and started${NC}"
         ;;
     *)
         echo -e "${RED}Invalid choice${NC}"
