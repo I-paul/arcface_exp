@@ -125,6 +125,10 @@ export default function MultiCamRecognition({ cameras: dbCameras = [], isCameras
             <span className="result-value confidence-value">{score}</span>
           </div>
         </div>
+        <div className="response-panel compact">
+          <h4>Backend Event Payload</h4>
+          <pre className="json-block">{JSON.stringify(event, null, 2)}</pre>
+        </div>
       </div>
     );
   };

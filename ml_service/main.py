@@ -174,12 +174,6 @@ async def recognize_face(
         Recognition result with name and confidence
     """
     try:
-        # Diagnostic snapshot of array-like locals (for pinpointing ambiguous truth-value errors)
-        logger.error("DEBUG TYPES SNAPSHOT:")
-        for name, val in locals().items():
-            if hasattr(val, "shape"):
-                logger.error(f"{name}: type={type(val)}, shape={val.shape}")
-
         # Read and decode image
         contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
@@ -196,7 +190,8 @@ async def recognize_face(
                 name=None,
                 confidence=0.0,
                 is_recognized=False,
-                message="No face detected in image"
+                message="No face detected in image",
+                liveness=None
             )
 
         # Preprocess faces (CPU) and keep only usable ones
@@ -214,7 +209,8 @@ async def recognize_face(
                 name=None,
                 confidence=0.0,
                 is_recognized=False,
-                message="No usable face after preprocessing"
+                message="No usable face after preprocessing",
+                liveness=None
             )
 
         # Use the largest usable face (track index to avoid equality checks)
@@ -235,11 +231,15 @@ async def recognize_face(
             # Get aligned face crop from the largest face
             x1, y1, x2, y2 = map(int, face.bbox)
             face_crop = image[y1:y2, x1:x2]
+
+            if face_crop is None or face_crop.size == 0:
+                raise ValueError("Empty face crop for liveness check")
             
             # Run anti-spoof check
             antispoof_result = antispoof_predictor.predict(face_crop)
             
             liveness_info = LivenessInfo(
+                status="live" if antispoof_result.is_live else "spoof",
                 is_live=antispoof_result.is_live,
                 real_score=antispoof_result.real_score,
                 fake_score=antispoof_result.fake_score
@@ -247,7 +247,10 @@ async def recognize_face(
             
             # REJECT if spoof detected
             if not antispoof_result.is_live:
-                logger.warning(f"SPOOF DETECTED - real_score: {antispoof_result.real_score:.3f}, fake_score: {antispoof_result.fake_score:.3f}")
+                logger.warning(
+                    f"SPOOF DETECTED - real_score: {antispoof_result.real_score:.3f}, "
+                    f"fake_score: {antispoof_result.fake_score:.3f}"
+                )
                 return RecognitionResponse(
                     name=None,
                     person_id=None,
@@ -261,8 +264,14 @@ async def recognize_face(
             
         except Exception as e:
             logger.error(f"Anti-spoof check failed: {e}")
-            
-            liveness_info = None
+            return RecognitionResponse(
+                name=None,
+                person_id=None,
+                confidence=0.0,
+                is_recognized=False,
+                message="Liveness check failed",
+                liveness=None
+            )
         
         # EMBEDDING EXTRACTION (ONLY IF LIVE)
 

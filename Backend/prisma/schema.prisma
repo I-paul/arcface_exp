@@ -1,0 +1,53 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Employee {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  empId     String   @unique @map("emp_id")
+  name      String?
+  milvusId  BigInt   @unique @map("milvus_id")
+  enrolledAt DateTime @default(now()) @map("enrolled_at")
+
+  attendanceEvents AttendanceEvent[]
+
+  @@map("employees")
+}
+
+model Camera {
+  camId     String   @id @db.Uuid @map("cam_id")
+  siteId    String?  @map("site_id")
+  siteName  String?  @map("site_name")
+  cameraLabel String? @map("camera_label")
+  createdAt DateTime? @map("created_at")
+
+  attendanceEvents AttendanceEvent[]
+
+  @@map("cameras")
+}
+
+model AttendanceEvent {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  empId            String?  @map("emp_id")
+  camId            String?  @db.Uuid @map("cam_id")
+  siteId           String?  @map("site_id")
+  eventTime        DateTime? @map("event_time")
+  action           String?  @db.VarChar(10)
+  similarityScore  Float?   @map("similarity_score")
+  livenessPassed   Boolean? @map("liveness_passed")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  employee         Employee? @relation(fields: [empId], references: [empId], onDelete: Cascade, onUpdate: Cascade)
+  camera           Camera?   @relation(fields: [camId], references: [camId], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([empId, createdAt(sort: Desc)], name: "idx_events_emp_time")
+  @@map("attendance_events")
+}

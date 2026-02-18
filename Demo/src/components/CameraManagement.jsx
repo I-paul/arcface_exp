@@ -7,6 +7,7 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [lastResponse, setLastResponse] = useState(null);
   const [formData, setFormData] = useState({
     site_id: '',
     site_name: '',
@@ -25,6 +26,7 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
     e.preventDefault();
     setError('');
     setMessage('');
+    setLastResponse(null);
 
     if (!formData.site_id || !formData.camera_label) {
       setError('Site ID and Camera Label are required');
@@ -43,6 +45,7 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
 
       if (response.ok) {
         const newCamera = await response.json();
+        setLastResponse({ ok: true, status: response.status, body: newCamera });
         onCameraAdded(newCamera);
         setMessage(`Camera "${newCamera.camera_label}" added successfully!`);
         setFormData({
@@ -54,11 +57,13 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
         setTimeout(() => setMessage(''), 3000);
       } else {
         const data = await response.json();
+        setLastResponse({ ok: false, status: response.status, body: data });
         setError(data.message || 'Failed to add camera');
       }
     } catch (err) {
       setError('Failed to connect to server');
       console.error('Error adding camera:', err);
+      setLastResponse({ ok: false, status: 0, body: { message: err.message } });
     } finally {
       setLoading(false);
     }
@@ -75,15 +80,19 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
       });
 
       if (response.ok) {
+        setLastResponse({ ok: true, status: response.status, body: { message: 'Camera deleted' } });
         onCameraDeleted(cam_id);
         setMessage('Camera deleted successfully');
         setTimeout(() => setMessage(''), 3000);
       } else {
-        setError('Failed to delete camera');
+        const data = await response.json();
+        setLastResponse({ ok: false, status: response.status, body: data });
+        setError(data.message || 'Failed to delete camera');
       }
     } catch (err) {
       setError('Failed to connect to server');
       console.error('Error deleting camera:', err);
+      setLastResponse({ ok: false, status: 0, body: { message: err.message } });
     }
   };
 
@@ -107,6 +116,12 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
       {loadError && <div className="error">{loadError}</div>}
       {error && <div className="error">{error}</div>}
       {message && <div className="success">{message}</div>}
+      {lastResponse && (
+        <div className="response-panel">
+          <h4>Backend Response</h4>
+          <pre className="json-block">{JSON.stringify(lastResponse, null, 2)}</pre>
+        </div>
+      )}
 
       {isLoading && (
         <div className="empty-state">
