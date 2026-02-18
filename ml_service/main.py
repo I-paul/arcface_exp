@@ -230,10 +230,36 @@ async def recognize_face(
         try:
             # Get aligned face crop from the largest face
             x1, y1, x2, y2 = map(int, face.bbox)
-            face_crop = image[y1:y2, x1:x2]
+            
+            # CRITICAL: Validate bbox coordinates
+            img_h, img_w = image.shape[:2]
+            
+            # Check if bbox is valid (coordinates in order and within bounds)
+            if x1 >= x2 or y1 >= y2:
+                logger.error(f"Invalid bbox dimensions - x1={x1}, y1={y1}, x2={x2}, y2={y2}. x must be x1<x2 and y must be y1<y2")
+                raise ValueError(f"Invalid bbox - degenerate rectangle (x1={x1}, x2={x2}, y1={y1}, y2={y2})")
+            
+            # Clip bbox to image boundaries
+            x1_clipped = max(0, min(x1, img_w - 1))
+            y1_clipped = max(0, min(y1, img_h - 1))
+            x2_clipped = max(x1_clipped + 1, min(x2, img_w))  # Ensure at least 1px width
+            y2_clipped = max(y1_clipped + 1, min(y2, img_h))  # Ensure at least 1px height
+            
+            # Check minimum face size (at least 16x16 pixels for anti-spoof)
+            crop_width = x2_clipped - x1_clipped
+            crop_height = y2_clipped - y1_clipped
+            if crop_width < 16 or crop_height < 16:
+                logger.warning(f"Face crop too small for reliable anti-spoof check: {crop_width}x{crop_height}px (min 16x16 required). Skipping liveness check.")
+                raise ValueError(f"Face crop {crop_width}x{crop_height}px is too small for anti-spoofing (min 16x16)")
+            
+            # Extract face crop
+            face_crop = image[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
 
             if face_crop is None or face_crop.size == 0:
-                raise ValueError("Empty face crop for liveness check")
+                logger.error(f"Failed to extract face crop from boundaries y1={y1_clipped}, y2={y2_clipped}, x1={x1_clipped}, x2={x2_clipped}")
+                raise ValueError("Empty face crop after boundary clipping")
+            
+            logger.debug(f"Face crop extracted: {face_crop.shape}, bbox=[{x1_clipped},{y1_clipped},{x2_clipped},{y2_clipped}]")
             
             # Run anti-spoof check
             antispoof_result = antispoof_predictor.predict(face_crop)
@@ -263,13 +289,16 @@ async def recognize_face(
             logger.info(f"LIVENESS CHECK PASSED - real_score: {antispoof_result.real_score:.3f}")
             
         except Exception as e:
-            logger.error(f"Anti-spoof check failed: {e}")
+            logger.error(f"Anti-spoof check failed: {type(e).__name__}: {e}")
+            logger.error(f"  Image shape: {image.shape}")
+            logger.error(f"  Face bbox: {face.bbox}")
+            logger.error(f"  Traceback: {traceback.format_exc()}")
             return RecognitionResponse(
                 name=None,
                 person_id=None,
                 confidence=0.0,
                 is_recognized=False,
-                message="Liveness check failed",
+                message=f"Liveness check failed: {str(e)}",
                 liveness=None
             )
         
@@ -378,12 +407,31 @@ async def enroll_person(
             
             # ANTI-SPOOFING CHECK FOR ENROLLMENT
             # Reject any spoofed images during enrollment
-            try:
-                faces = face_processor.detect_faces(image)
+            try:\n                faces = face_processor.detect_faces(image)
                 if faces:
                     largest_face = face_processor.select_largest_face(faces)
                     x1, y1, x2, y2 = map(int, largest_face.bbox)
-                    face_crop = image[y1:y2, x1:x2]
+                    
+                    # Validate bbox coordinates
+                    img_h, img_w = image.shape[:2]
+                    if x1 >= x2 or y1 >= y2:
+                        logger.warning(f"Invalid bbox during enrollment - skipping image: x1={x1}, y1={y1}, x2={x2}, y2={y2}")
+                        continue
+                    
+                    # Clip bbox to image boundaries
+                    x1_clipped = max(0, min(x1, img_w - 1))
+                    y1_clipped = max(0, min(y1, img_h - 1))
+                    x2_clipped = max(x1_clipped + 1, min(x2, img_w))
+                    y2_clipped = max(y1_clipped + 1, min(y2, img_h))
+                    
+                    # Check minimum face size
+                    crop_width = x2_clipped - x1_clipped
+                    crop_height = y2_clipped - y1_clipped
+                    if crop_width < 16 or crop_height < 16:
+                        logger.warning(f"Face crop too small during enrollment ({crop_width}x{crop_height}px) - skipping")
+                        continue
+                    
+                    face_crop = image[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
                     
                     antispoof_result = antispoof_predictor.predict(face_crop)
                     
@@ -392,7 +440,7 @@ async def enroll_person(
                         spoof_count += 1
                         continue
             except Exception as e:
-                logger.error(f"Anti-spoof check failed during enrollment: {e}")
+                logger.error(f"Anti-spoof check failed during enrollment: {type(e).__name__}: {e}")
                 # For enrollment, we skip images that fail anti-spoof check
                 continue
             
@@ -519,7 +567,27 @@ async def websocket_recognize(websocket: WebSocket):
                     # ANTI-SPOOFING CHECK (WebSocket)
                     try:
                         x1, y1, x2, y2 = map(int, face.bbox)
-                        face_crop = image[y1:y2, x1:x2]
+                        
+                        # Validate bbox coordinates
+                        img_h, img_w = image.shape[:2]
+                        if x1 >= x2 or y1 >= y2:
+                            logger.warning(f"Invalid bbox in WebSocket - x1={x1}, y1={y1}, x2={x2}, y2={y2}")
+                            raise ValueError(f"Invalid bbox dimensions")
+                        
+                        # Clip bbox to image boundaries
+                        x1_clipped = max(0, min(x1, img_w - 1))
+                        y1_clipped = max(0, min(y1, img_h - 1))
+                        x2_clipped = max(x1_clipped + 1, min(x2, img_w))
+                        y2_clipped = max(y1_clipped + 1, min(y2, img_h))
+                        
+                        # Check minimum face size
+                        crop_width = x2_clipped - x1_clipped
+                        crop_height = y2_clipped - y1_clipped
+                        if crop_width < 16 or crop_height < 16:
+                            logger.warning(f"Face crop too small in WebSocket ({crop_width}x{crop_height}px)")
+                            raise ValueError(f"Face too small for anti-spoof check")
+                        
+                        face_crop = image[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
                         antispoof_result = antispoof_predictor.predict(face_crop)
                         
                         if not antispoof_result.is_live:
@@ -538,7 +606,7 @@ async def websocket_recognize(websocket: WebSocket):
                             })
                             continue
                     except Exception as e:
-                        logger.error(f"Anti-spoof check failed in WebSocket: {e}")
+                        logger.error(f"Anti-spoof check failed in WebSocket: {type(e).__name__}: {e}")
                     
                     # Tracking + gating + batch search
                     now_ts = time.time()

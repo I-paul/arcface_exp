@@ -103,12 +103,43 @@ class AntiSpoofPredictor:
             
         Returns:
             Preprocessed tensor (1, 3, 80, 80)
+            
+        Raises:
+            ValueError: If input is invalid
         """
+        # Validate input
+        if face_crop is None:
+            raise ValueError("face_crop is None")
+        
+        if not isinstance(face_crop, np.ndarray):
+            raise ValueError(f"face_crop must be numpy array, got {type(face_crop)}")
+        
+        if face_crop.size == 0:
+            raise ValueError(f"face_crop is empty with shape {face_crop.shape}")
+        
+        if len(face_crop.shape) != 3:
+            raise ValueError(f"face_crop must be 3D array (H,W,C), got shape {face_crop.shape}")
+        
+        h, w, c = face_crop.shape
+        if c != 3:
+            raise ValueError(f"face_crop must have 3 channels (BGR), got {c} channels")
+        
+        if h < 1 or w < 1:
+            raise ValueError(f"face_crop invalid dimensions: {h}x{w} (must be >= 1x1)")
+        
+        logger.debug(f"Preprocessing input: shape={face_crop.shape}, dtype={face_crop.dtype}")
+        
         # Resize to 80x80
-        face_resized = cv2.resize(face_crop, self.INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
+        try:
+            face_resized = cv2.resize(face_crop, self.INPUT_SIZE, interpolation=cv2.INTER_LINEAR)
+        except Exception as e:
+            raise ValueError(f"cv2.resize failed: {e}")
         
         # BGR to RGB
-        face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+        try:
+            face_rgb = cv2.cvtColor(face_resized, cv2.COLOR_BGR2RGB)
+        except Exception as e:
+            raise ValueError(f"cv2.cvtColor failed: {e}")
         
         # Normalize to [0, 1]
         face_float = face_rgb.astype(np.float32) / 255.0
@@ -134,15 +165,30 @@ class AntiSpoofPredictor:
             
         Returns:
             AntiSpoofResult with is_live, scores, and label
+            
+        Raises:
+            ValueError: If input validation fails
+            RuntimeError: If inference fails
         """
-        # Preprocess
-        input_tensor = self.preprocess(face_crop)
+        # Preprocess (with validation)
+        try:
+            input_tensor = self.preprocess(face_crop)
+        except ValueError as ve:
+            logger.error(f"Input validation failed: {ve}")
+            raise
+        except Exception as e:
+            logger.error(f"Preprocessing failed: {type(e).__name__}: {e}")
+            raise ValueError(f"Preprocessing failed: {e}")
         
         # Run inference
-        logits = self.session.run(
-            [self.output_name],
-            {self.input_name: input_tensor}
-        )[0]
+        try:
+            logits = self.session.run(
+                [self.output_name],
+                {self.input_name: input_tensor}
+            )[0]
+        except Exception as e:
+            logger.error(f"ONNX inference failed: {type(e).__name__}: {e}")
+            raise RuntimeError(f"Anti-spoof inference failed: {e}")
         
         # logits shape: (1, 2) -> [real_logit, fake_logit]
         # DO NOT use softmax - use argmax on raw logits as per instructions
