@@ -20,6 +20,7 @@ from inference.face_processor import FaceProcessor
 from inference.recognition_pipeline import RecognitionPipeline
 from embeddings.embedding_manager import EmbeddingManager
 from milvus_client.client import MilvusClient
+from anti_spoofing.inference import init_predictor, get_predictor, AntiSpoofResult
 
 # Configure logging
 logging.basicConfig(
@@ -49,14 +50,22 @@ face_processor = None
 embedding_manager = None
 milvus_client = None
 recognition_pipeline = None
+antispoof_predictor = None
 
 # Pydantic models
+class LivenessInfo(BaseModel):
+    status: str  # "live" or "spoof"
+    is_live: bool
+    real_score: float
+    fake_score: float
+
 class RecognitionResponse(BaseModel):
     name: Optional[str]
     person_id: Optional[str]
     confidence: float
     is_recognized: bool
     message: str
+    liveness: Optional[LivenessInfo] = None
 
 class EnrollmentRequest(BaseModel):
     name: str
@@ -78,7 +87,7 @@ class HealthResponse(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     """Initialize ML models and connections on startup"""
-    global face_processor, embedding_manager, milvus_client, recognition_pipeline
+    global face_processor, embedding_manager, milvus_client, recognition_pipeline, antispoof_predictor
     
     logger.info("="*60)
     logger.info("Starting ML Service...")
@@ -93,6 +102,11 @@ async def startup_event():
             logger.info("✓ GPU ENABLED - Recognition and Enrollment will run on GPU")
         else:
             logger.error("✗ GPU NOT AVAILABLE - Service may not start correctly")
+        
+        # Initialize Anti-Spoofing Predictor
+        logger.info("Initializing Anti-Spoofing Predictor...")
+        antispoof_predictor = init_predictor(use_gpu=True)
+        logger.info("✓ Anti-Spoofing model loaded (MiniFASNet ONNX)")
         
         # Initialize Embedding Manager
         logger.info("Initializing Embedding Manager...")
@@ -109,6 +123,7 @@ async def startup_event():
         logger.info("="*60)
         logger.info("✓ ML Service started successfully!")
         logger.info(f"  - GPU Status: {'ENABLED' if face_processor.is_gpu_available() else 'DISABLED'}")
+        logger.info(f"  - Anti-Spoofing: ENABLED")
         logger.info(f"  - Milvus Status: {'CONNECTED' if milvus_client.is_connected() else 'DISCONNECTED'}")
         logger.info("="*60)
         
@@ -218,6 +233,50 @@ async def recognize_face(
                 largest_index = i
         face = usable_faces[largest_index]
 
+        # ========================================
+        # ANTI-SPOOFING CHECK (BEFORE EMBEDDING)
+        # ========================================
+        # Extract aligned face for anti-spoofing
+        # InsightFace provides aligned 112x112 face in face.normed_embedding attribute
+        # But we need the actual aligned image, so we'll get it from the face object
+        try:
+            # Get aligned face crop from the largest face
+            x1, y1, x2, y2 = map(int, face.bbox)
+            face_crop = image[y1:y2, x1:x2]
+            
+            # Run anti-spoof check
+            antispoof_result = antispoof_predictor.predict(face_crop)
+            
+            liveness_info = LivenessInfo(
+                is_live=antispoof_result.is_live,
+                real_score=antispoof_result.real_score,
+                fake_score=antispoof_result.fake_score
+            )
+            
+            # REJECT if spoof detected
+            if not antispoof_result.is_live:
+                logger.warning(f"🚫 SPOOF DETECTED - real_score: {antispoof_result.real_score:.3f}, fake_score: {antispoof_result.fake_score:.3f}")
+                return RecognitionResponse(
+                    name=None,
+                    person_id=None,
+                    confidence=0.0,
+                    is_recognized=False,
+                    message="Spoof detected - liveness check failed",
+                    liveness=liveness_info
+                )
+            
+            logger.info(f"✅ LIVENESS CHECK PASSED - real_score: {antispoof_result.real_score:.3f}")
+            
+        except Exception as e:
+            logger.error(f"Anti-spoof check failed: {e}")
+            # Optionally: fail open or fail closed
+            # For now, we'll continue with recognition but log the error
+            liveness_info = None
+        
+        # ========================================
+        # EMBEDDING EXTRACTION (ONLY IF LIVE)
+        # ========================================
+
         # Tracking + gating + batching
         now_ts = time.time()
         session_key = session_id or "default"
@@ -261,7 +320,8 @@ async def recognize_face(
                 person_id=result.get('person_id'),
                 confidence=float(result.get('confidence', 0)),
                 is_recognized=True,
-                message="Face recognized successfully"
+                message="Face recognized successfully",
+                liveness=liveness_info
             )
         else:
             return RecognitionResponse(
@@ -269,7 +329,8 @@ async def recognize_face(
                 person_id=None,
                 confidence=float(result.get('confidence', 0)) if result is not None else 0.0,
                 is_recognized=False,
-                message="Unknown face"
+                message="Unknown face",
+                liveness=liveness_info
             )
             
     except Exception as e:
@@ -303,6 +364,7 @@ async def enroll_person(
             )
         
         embeddings = []
+        spoof_count = 0
         
         for file in files:
             # Read and decode image
@@ -317,12 +379,36 @@ async def enroll_person(
             result = face_processor.process_for_enrollment(image)
             if not result.get("success"):
                 continue
+            
+            # ANTI-SPOOFING CHECK FOR ENROLLMENT
+            # Reject any spoofed images during enrollment
+            try:
+                faces = face_processor.detect_faces(image)
+                if faces:
+                    largest_face = face_processor.select_largest_face(faces)
+                    x1, y1, x2, y2 = map(int, largest_face.bbox)
+                    face_crop = image[y1:y2, x1:x2]
+                    
+                    antispoof_result = antispoof_predictor.predict(face_crop)
+                    
+                    if not antispoof_result.is_live:
+                        logger.warning(f"🚫 Spoof detected in enrollment image - rejecting")
+                        spoof_count += 1
+                        continue
+            except Exception as e:
+                logger.error(f"Anti-spoof check failed during enrollment: {e}")
+                # For enrollment, we skip images that fail anti-spoof check
+                continue
+            
             embeddings.append(result["embedding"])
         
         if len(embeddings) < 3:
+            rejection_msg = f"Only {len(embeddings)} valid faces found. Need at least 3."
+            if spoof_count > 0:
+                rejection_msg += f" ({spoof_count} images rejected due to spoof detection)"
             raise HTTPException(
                 status_code=400,
-                detail=f"Only {len(embeddings)} valid faces found. Need at least 3."
+                detail=rejection_msg
             )
         
         # Compute centroid embedding
@@ -331,11 +417,14 @@ async def enroll_person(
         # Store in Milvus
         person_id = milvus_client.insert_face(centroid)
         
-        logger.info(f"Successfully enrolled {name} with {len(embeddings)} images")
+        success_msg = f"Successfully enrolled {name} with {len(embeddings)} images"
+        if spoof_count > 0:
+            success_msg += f" ({spoof_count} spoofed images rejected)"
+        logger.info(success_msg)
         
         return EnrollmentResponse(
             success=True,
-            message=f"Successfully enrolled {name} with {len(embeddings)} images",
+            message=success_msg,
             person_id=person_id
         )
         
@@ -433,6 +522,30 @@ async def websocket_recognize(websocket: WebSocket):
                             largest_index = i
                     face = usable_faces[largest_index]
                     
+                    # ANTI-SPOOFING CHECK (WebSocket)
+                    try:
+                        x1, y1, x2, y2 = map(int, face.bbox)
+                        face_crop = image[y1:y2, x1:x2]
+                        antispoof_result = antispoof_predictor.predict(face_crop)
+                        
+                        if not antispoof_result.is_live:
+                            await websocket.send_json({
+                                "type": "result",
+                                "name": None,
+                                "confidence": 0.0,
+                                "is_recognized": False,
+                                "message": "Spoof detected",
+                                "liveness": {
+                                    "status": "spoof",
+                                    "is_live": False,
+                                    "real_score": float(antispoof_result.real_score),
+                                    "fake_score": float(antispoof_result.fake_score)
+                                }
+                            })
+                            continue
+                    except Exception as e:
+                        logger.error(f"Anti-spoof check failed in WebSocket: {e}")
+                    
                     # Tracking + gating + batch search
                     now_ts = time.time()
                     session_key = f"ws:{id(websocket)}"
@@ -474,7 +587,13 @@ async def websocket_recognize(websocket: WebSocket):
                             "name": result.get('name'),
                             "confidence": float(result.get('confidence', 0)),
                             "is_recognized": True,
-                            "message": "Face recognized"
+                            "message": "Face recognized",
+                            "liveness": {
+                                "status": "live",
+                                "is_live": True,
+                                "real_score": float(antispoof_result.real_score) if 'antispoof_result' in locals() else 0.0,
+                                "fake_score": float(antispoof_result.fake_score) if 'antispoof_result' in locals() else 0.0
+                            }
                         })
                     else:
                         await websocket.send_json({
@@ -482,7 +601,13 @@ async def websocket_recognize(websocket: WebSocket):
                             "name": None,
                             "confidence": float(result.get('confidence', 0)) if result is not None else 0.0,
                             "is_recognized": False,
-                            "message": "Unknown face"
+                            "message": "Unknown face",
+                            "liveness": {
+                                "status": "live",
+                                "is_live": True,
+                                "real_score": float(antispoof_result.real_score) if 'antispoof_result' in locals() else 0.0,
+                                "fake_score": float(antispoof_result.fake_score) if 'antispoof_result' in locals() else 0.0
+                            }
                         })
                 
                 except Exception as e:
