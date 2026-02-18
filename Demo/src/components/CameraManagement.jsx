@@ -13,7 +13,7 @@ export default function CameraManagement({ cameras, onCameraAdded, onCameraDelet
     site_name: '',
     camera_label: '',
   });
-
+  
   const handleInputChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({

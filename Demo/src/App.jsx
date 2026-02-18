@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import MultiCamRecognition from './components/MultiCamRecognition';
+import IPCameraRecognition from './components/IPCameraRecognition';
 import EnrollSocket from './components/EnrollSocket';
 import CameraManagement from './components/CameraManagement';
 
@@ -85,7 +85,7 @@ export default function App() {
           />
         )}
         {tab === NAV.RECOGNITION && (
-          <MultiCamRecognition cameras={cameras} isCamerasLoaded={camerasLoaded} />
+          <IPCameraRecognition cameras={cameras} isCamerasLoaded={camerasLoaded} />
         )}
         {tab === NAV.ENROLL && <EnrollSocket />}
       </main>

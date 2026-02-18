@@ -341,7 +341,7 @@ async def recognize_face(
             if largest_index in face_indices:
                 result = results[face_indices.index(largest_index)] if len(results) > 0 else None
         
-        if result is not None and result.get('confidence', 0) >= 0.65:
+        if result is not None and result.get('confidence', 0) >= 0.50:
             return RecognitionResponse(
                 name=None,
                 person_id=result.get('person_id'),
@@ -407,7 +407,8 @@ async def enroll_person(
             
             # ANTI-SPOOFING CHECK FOR ENROLLMENT
             # Reject any spoofed images during enrollment
-            try:\n                faces = face_processor.detect_faces(image)
+            try:
+                faces = face_processor.detect_faces(image)
                 if faces:
                     largest_face = face_processor.select_largest_face(faces)
                     x1, y1, x2, y2 = map(int, largest_face.bbox)
