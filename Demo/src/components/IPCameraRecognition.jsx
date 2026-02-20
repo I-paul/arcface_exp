@@ -324,18 +324,13 @@ export default function IPCameraRecognition({ cameras: dbCameras = [], isCameras
           {detected ? '✓ Detected' : '✗ Not Detected'}
         </div>
         {detected && name && (
-          <>
-            <div className="detail name-display">
-              <strong>Person:</strong> {name}
-            </div>
-            <div className="detail">
-              <strong>Confidence:</strong> {(confidence * 100).toFixed(2)}%
-            </div>
-          </>
+          <div className="detail name-display">
+            <strong>Person:</strong> {name}
+          </div>
         )}
-        {!detected && message && (
+        {!detected && (
           <div className="detail">
-            <strong>Status:</strong> {message}
+            <strong>Status:</strong> Unknown
           </div>
         )}
       </div>
