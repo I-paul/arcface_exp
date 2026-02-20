@@ -1,13 +1,9 @@
-# ============================================
 # PRODUCTION DOCKER COMPOSE
 # Face Recognition System - Full Stack
-# ============================================
 version: '3.8'
 
 services:
-  # ============================================
   # MILVUS - Vector Database
-  # ============================================
   etcd:
     container_name: milvus-etcd
     image: quay.io/coreos/etcd:v3.5.5
@@ -68,9 +64,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # ML SERVICE - Face Recognition API
-  # ============================================
   ml-service:
     container_name: ml-service
     build:
@@ -99,9 +93,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # BACKEND - API Gateway / Business Logic
-  # ============================================
   backend:
     container_name: backend
     build:
@@ -119,9 +111,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # REDIS - Job Queue
-  # ============================================
   redis:
     container_name: redis
     image: redis:7
@@ -131,9 +121,7 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # WORKER - Face Recognition Queue Processor
-  # ============================================
   worker:
     container_name: face-worker
     build:
@@ -150,16 +138,12 @@ services:
     networks:
       - app-network
 
-# ============================================
 # NETWORKS
-# ============================================
 networks:
   app-network:
     driver: bridge
 
-# ============================================
 # VOLUMES
-# ============================================
 volumes:
   ml-models:
     driver: local

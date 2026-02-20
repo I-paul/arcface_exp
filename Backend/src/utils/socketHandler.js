@@ -12,13 +12,6 @@ const MIN_RECOGNITION_INTERVAL_MS = 250; // ~4 FPS throttle
  * @param {Server} io - Socket.IO server instance
  */
 module.exports = function socketHandler(io) {
-  const resolveNameByMilvusId = async (milvusId) => {
-    if (!milvusId) return null;
-    const query = 'SELECT name FROM employees WHERE milvus_id = $1';
-    const { rows } = await pool.query(query, [milvusId]);
-    return rows.length ? rows[0].name : null;
-  };
-  // Queue events listener for real-time notifications
   const queueEvents = new QueueEvents('face-recognition', {
     connection: {
       host: process.env.REDIS_HOST || 'localhost',
@@ -101,24 +94,31 @@ module.exports = function socketHandler(io) {
           }
         );
 
-        let resolvedName = null;
-        if (result.is_recognized && result.person_id) {
+        // Initialize response with basic ML service result
+        const response = {
+          camera_id,
+          detected: result.is_recognized || false,
+          name: null,
+          confidence: result.confidence || 0,
+          message: result.message || 'Recognition complete'
+        };
+
+        // If detected, resolve employee name from milvus_id (keep as string)
+        if (response.detected && result.person_id) {
           try {
-            resolvedName = await resolveNameByMilvusId(result.person_id);
+            const milvusId = result.person_id;  // Keep as string - no parseInt!
+            const query = 'SELECT name FROM employees WHERE milvus_id = $1';
+            const { rows } = await pool.query(query, [milvusId]);
+            if (rows.length) {
+              response.name = rows[0].name;
+            }
           } catch (lookupErr) {
-            console.error('[Socket.IO] Failed to resolve name:', lookupErr.message);
+            console.error('[Socket.IO] Lookup error:', lookupErr.message);
           }
         }
 
         // Emit result back to client with camera_id
-        socket.emit('recognition-result', {
-          camera_id,
-          name: resolvedName || null,
-          person_id: result.person_id || null,
-          confidence: result.confidence || 0,
-          is_recognized: result.is_recognized || false,
-          message: result.message || 'Recognition complete'
-        });
+        socket.emit('recognition-result', response);
 
       } catch (error) {
         console.error('[Socket.IO] Recognition error:', error.message);

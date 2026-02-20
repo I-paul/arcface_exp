@@ -23,8 +23,11 @@ const enrollEmployee = async (req, res) => {
 		if (!name) {
 			return res.status(400).json({ message: 'name is required for enrollment' });
 		}
-		if (!req.files || !req.files.length) {
-			return res.status(400).json({ message: 'At least one image file is required' });
+		if (!req.files || req.files.length < 3) {
+			return res.status(400).json({ message: 'At least 3 image files are required for enrollment' });
+		}
+		if (req.files.length > 5) {
+			return res.status(400).json({ message: 'Maximum 5 images allowed for enrollment' });
 		}
 
 		// Check if employee already exists
@@ -47,27 +50,40 @@ const enrollEmployee = async (req, res) => {
 			timeout: 30000,
 		});
 
+		// Validate ML service response
+		if (!mlData || !mlData.success) {
+			const errorMsg = mlData?.message || 'ML service enrollment failed';
+			return res.status(400).json({ message: errorMsg });
+		}
+
 		// Extract milvus_id from ML service response
 		const milvus_id = mlData.person_id;
 		if (!milvus_id) {
 			return res.status(500).json({ message: 'ML service did not return person_id' });
 		}
 
-		// Store in database
+		// Store in database with UUID generation
 		const insertQuery = `
-			INSERT INTO employees (emp_id, name, milvus_id)
-			VALUES ($1, $2, $3)
-			RETURNING emp_id, name, milvus_id;
+			INSERT INTO employees (id, emp_id, name, milvus_id, enrolled_at)
+			VALUES (gen_random_uuid(), $1, $2, $3, NOW())
+			RETURNING id, emp_id, name, milvus_id, enrolled_at;
 		`;
 
 		const { rows } = await pool.query(insertQuery, [emp_id, name, milvus_id]);
 
+		const employee = rows[0];
 		console.log(`[ENROLL] Employee ${emp_id} (${name}) enrolled with milvus_id ${milvus_id}`);
 
 		return res.status(201).json({
 			success: true,
 			message: `Employee ${name} enrolled successfully`,
-			employee: rows[0]
+			employee: {
+				id: employee.id,
+				emp_id: employee.emp_id,
+				name: employee.name,
+				milvus_id: employee.milvus_id,
+				enrolled_at: employee.enrolled_at
+			}
 		});
 	} catch (error) {
 		const status = error.response?.status || 500;
@@ -178,9 +194,9 @@ const getJobStatus = async (req, res) => {
 const getAllEmployees = async (req, res) => {
 	try {
 		const query = `
-			SELECT emp_id, name, milvus_id
+			SELECT id, emp_id, name, milvus_id, enrolled_at
 			FROM employees
-			ORDER BY emp_id;
+			ORDER BY enrolled_at DESC;
 		`;
 		const { rows } = await pool.query(query);
 		return res.status(200).json(rows);
@@ -197,7 +213,7 @@ const getEmployeeById = async (req, res) => {
 	try {
 		const { emp_id } = req.params;
 		const query = `
-			SELECT emp_id, name, milvus_id
+			SELECT id, emp_id, name, milvus_id, enrolled_at
 			FROM employees
 			WHERE emp_id = $1;
 		`;

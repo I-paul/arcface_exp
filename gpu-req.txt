@@ -1,6 +1,4 @@
-# ============================================
 # PYTORCH WITH CUDA 12.1 SUPPORT
-# ============================================
 --index-url https://download.pytorch.org/whl/cu121
 
 torch>=2.0.0

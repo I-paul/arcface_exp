@@ -31,9 +31,11 @@ const recordAttendanceEvent = async (req, res) => {
 		if (cooldownRows.length) {
 			const lastEventTime = new Date(cooldownRows[0].event_time).getTime();
 			const now = Date.now();
-			if (now - lastEventTime < 2 * 60 * 1000) {
+			if (now - lastEventTime < 60 * 1000) {
+				const remainingSeconds = Math.ceil((60 * 1000 - (now - lastEventTime)) / 1000);
 				return res.status(429).json({
-					message: 'Attendance cooldown active. Try again later.'
+					message: `Attendance cooldown active. Try again in ${remainingSeconds}s`,
+					cooldown_remaining_seconds: remainingSeconds
 				});
 			}
 		}

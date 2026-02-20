@@ -20,6 +20,7 @@ from inference.face_processor import FaceProcessor
 from inference.recognition_pipeline import RecognitionPipeline
 from embeddings.embedding_manager import EmbeddingManager
 from milvus_client.client import MilvusClient
+from anti_spoofing.inference import init_predictor, get_predictor, AntiSpoofResult
 
 # Configure logging
 logging.basicConfig(
@@ -49,15 +50,9 @@ face_processor = None
 embedding_manager = None
 milvus_client = None
 recognition_pipeline = None
+antispoof_predictor = None
 
 # Pydantic models
-class RecognitionResponse(BaseModel):
-    name: Optional[str]
-    person_id: Optional[str]
-    confidence: float
-    is_recognized: bool
-    message: str
-
 class EnrollmentRequest(BaseModel):
     name: str
 
@@ -72,13 +67,11 @@ class HealthResponse(BaseModel):
     milvus_connected: bool
     runtime_providers: Optional[dict] = None
 
-# ==========================
 # STARTUP & SHUTDOWN
-# ==========================
 @app.on_event("startup")
 async def startup_event():
     """Initialize ML models and connections on startup"""
-    global face_processor, embedding_manager, milvus_client, recognition_pipeline
+    global face_processor, embedding_manager, milvus_client, recognition_pipeline, antispoof_predictor
     
     logger.info("="*60)
     logger.info("Starting ML Service...")
@@ -90,9 +83,14 @@ async def startup_event():
         face_processor = FaceProcessor(force_gpu=True)  # Force GPU for production
         
         if face_processor.is_gpu_available():
-            logger.info("✓ GPU ENABLED - Recognition and Enrollment will run on GPU")
+            logger.info("GPU ENABLED - Recognition and Enrollment will run on GPU")
         else:
-            logger.error("✗ GPU NOT AVAILABLE - Service may not start correctly")
+            logger.error("GPU NOT AVAILABLE - Service may not start correctly")
+        
+        # Initialize Anti-Spoofing Predictor
+        logger.info("Initializing Anti-Spoofing Predictor...")
+        antispoof_predictor = init_predictor(use_gpu=True)
+        logger.info("Anti-Spoofing model loaded (MiniFASNet ONNX)")
         
         # Initialize Embedding Manager
         logger.info("Initializing Embedding Manager...")
@@ -107,14 +105,15 @@ async def startup_event():
         milvus_client = MilvusClient()
         
         logger.info("="*60)
-        logger.info("✓ ML Service started successfully!")
+        logger.info("ML Service started successfully!")
         logger.info(f"  - GPU Status: {'ENABLED' if face_processor.is_gpu_available() else 'DISABLED'}")
+        logger.info(f"  - Anti-Spoofing: ENABLED")
         logger.info(f"  - Milvus Status: {'CONNECTED' if milvus_client.is_connected() else 'DISCONNECTED'}")
         logger.info("="*60)
         
     except Exception as e:
         logger.error("="*60)
-        logger.error(f"✗ Failed to start ML Service: {str(e)}")
+        logger.error(f"Failed to start ML Service: {str(e)}")
         logger.error("="*60)
         raise
 
@@ -125,9 +124,7 @@ async def shutdown_event():
     if milvus_client:
         milvus_client.disconnect()
 
-# ==========================
 # HEALTH & STATUS
-# ==========================
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check endpoint"""
@@ -147,139 +144,7 @@ async def root():
         "status": "running"
     }
 
-# ==========================
-# RECOGNITION
-# ==========================
-@app.post("/recognize", response_model=RecognitionResponse)
-async def recognize_face(
-    file: UploadFile = File(...),
-    session_id: Optional[str] = Form(None)
-):
-    """
-    Recognize a face from an uploaded image
-    
-    Args:
-        file: Image file containing a face
-        
-    Returns:
-        Recognition result with name and confidence
-    """
-    try:
-        # Diagnostic snapshot of array-like locals (for pinpointing ambiguous truth-value errors)
-        logger.error("DEBUG TYPES SNAPSHOT:")
-        for name, val in locals().items():
-            if hasattr(val, "shape"):
-                logger.error(f"{name}: type={type(val)}, shape={val.shape}")
-
-        # Read and decode image
-        contents = await file.read()
-        nparr = np.frombuffer(contents, np.uint8)
-        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if image is None:
-            raise HTTPException(status_code=400, detail="Invalid image format")
-        
-        # Detect faces (GPU)
-        faces = face_processor.detect_faces(image)
-        
-        if not faces:
-            return RecognitionResponse(
-                name=None,
-                confidence=0.0,
-                is_recognized=False,
-                message="No face detected in image"
-            )
-
-        # Preprocess faces (CPU) and keep only usable ones
-        usable_faces = []
-        usable_bboxes = []
-
-        for f in faces:
-            preprocess_result = face_processor.preprocess_face(image, f, mode="recognize")
-            if preprocess_result.usable:
-                usable_faces.append(f)
-                usable_bboxes.append((f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]))
-
-        if not usable_faces:
-            return RecognitionResponse(
-                name=None,
-                confidence=0.0,
-                is_recognized=False,
-                message="No usable face after preprocessing"
-            )
-
-        # Use the largest usable face (track index to avoid equality checks)
-        largest_index = None
-        largest_area = -1.0
-        for i, f in enumerate(usable_faces):
-            area = (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
-            if area > largest_area:
-                largest_area = area
-                largest_index = i
-        face = usable_faces[largest_index]
-
-        # Tracking + gating + batching
-        now_ts = time.time()
-        session_key = session_id or "default"
-
-        track_ids = recognition_pipeline.update_tracks(session_key, usable_bboxes, now=now_ts)
-
-        embeddings_to_search = []
-        face_indices = []
-
-        for idx, f in enumerate(usable_faces):
-            track = recognition_pipeline.get_track(session_key, track_ids[idx])
-            if recognition_pipeline.should_embed(track, usable_bboxes[idx], now_ts):
-                embeddings_to_search.append(face_processor.get_embedding(f))
-                face_indices.append(idx)
-
-        results = []
-        if len(embeddings_to_search) > 0:
-            results = milvus_client.search_faces(embeddings_to_search)
-            for r_idx, face_idx in enumerate(face_indices):
-                recognition_pipeline.update_track_result(
-                    session_key,
-                    track_ids[face_idx],
-                    usable_bboxes[face_idx],
-                    results[r_idx] if r_idx < len(results) else None,
-                    now_ts
-                )
-
-        # Use cached result for largest face if embedding not run
-        track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
-        result = None
-        if track_for_largest and track_for_largest.last_result:
-            result = track_for_largest.last_result
-        elif len(embeddings_to_search) > 0:
-            # If embedding ran for largest face but result wasn't cached yet
-            if largest_index in face_indices:
-                result = results[face_indices.index(largest_index)] if len(results) > 0 else None
-        
-        if result is not None and result.get('confidence', 0) >= 0.65:
-            return RecognitionResponse(
-                name=None,
-                person_id=result.get('person_id'),
-                confidence=float(result.get('confidence', 0)),
-                is_recognized=True,
-                message="Face recognized successfully"
-            )
-        else:
-            return RecognitionResponse(
-                name=None,
-                person_id=None,
-                confidence=float(result.get('confidence', 0)) if result is not None else 0.0,
-                is_recognized=False,
-                message="Unknown face"
-            )
-            
-    except Exception as e:
-        logger.error("Recognition crash traceback:\n" + traceback.format_exc())
-        logger.error(f"Recognition error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================
 # ENROLLMENT
-# ==========================
 @app.post("/enroll", response_model=EnrollmentResponse)
 async def enroll_person(
     name: str = Form(...),
@@ -317,6 +182,7 @@ async def enroll_person(
             result = face_processor.process_for_enrollment(image)
             if not result.get("success"):
                 continue
+            
             embeddings.append(result["embedding"])
         
         if len(embeddings) < 3:
@@ -331,11 +197,12 @@ async def enroll_person(
         # Store in Milvus
         person_id = milvus_client.insert_face(centroid)
         
-        logger.info(f"Successfully enrolled {name} with {len(embeddings)} images")
+        success_msg = f"Successfully enrolled {name} with {len(embeddings)} images"
+        logger.info(success_msg)
         
         return EnrollmentResponse(
             success=True,
-            message=f"Successfully enrolled {name} with {len(embeddings)} images",
+            message=success_msg,
             person_id=person_id
         )
         
@@ -345,9 +212,7 @@ async def enroll_person(
         logger.error(f"Enrollment error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================
 # WEBSOCKET FOR STREAMING
-# ==========================
 @app.websocket("/ws/recognize")
 async def websocket_recognize(websocket: WebSocket):
     """
@@ -360,8 +225,27 @@ async def websocket_recognize(websocket: WebSocket):
     try:
         while True:
             # Receive message from client
-            data = await websocket.receive_text()
-            message = json.loads(data)
+            try:
+                data = await websocket.receive_text()
+                logger.debug(f"Received message: {data[:100]}...")
+            except Exception as e:
+                logger.error(f"Failed to receive message: {type(e).__name__}: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Failed to receive message"
+                })
+                continue
+            
+            # Parse JSON
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parsing error: {e}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Invalid JSON format"
+                })
+                continue
             
             if message.get("type") == "recognize":
                 try:
@@ -374,12 +258,30 @@ async def websocket_recognize(websocket: WebSocket):
                         })
                         continue
                     
+                    # Check image size (max 10MB base64 = ~7.5MB binary)
+                    if len(image_data) > 10 * 1024 * 1024:
+                        logger.warning(f"Image too large: {len(image_data)} bytes")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Image too large (max 10MB)"
+                        })
+                        continue
+                    
                     # Remove base64 header if present
                     if "base64," in image_data:
                         image_data = image_data.split("base64,")[1]
                     
                     # Decode image
-                    image_bytes = base64.b64decode(image_data)
+                    try:
+                        image_bytes = base64.b64decode(image_data)
+                    except Exception as e:
+                        logger.error(f"Base64 decoding error: {e}")
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Invalid base64 encoding"
+                        })
+                        continue
+                    
                     nparr = np.frombuffer(image_bytes, np.uint8)
                     image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
                     
@@ -433,6 +335,53 @@ async def websocket_recognize(websocket: WebSocket):
                             largest_index = i
                     face = usable_faces[largest_index]
                     
+                    # ANTI-SPOOFING CHECK (WebSocket)
+                    # Initialize antispoof_result before try block to avoid scope issues
+                    antispoof_result = None
+                    try:
+                        x1, y1, x2, y2 = map(int, face.bbox)
+                        
+                        # Validate bbox coordinates
+                        img_h, img_w = image.shape[:2]
+                        if x1 >= x2 or y1 >= y2:
+                            logger.warning(f"Invalid bbox in WebSocket - x1={x1}, y1={y1}, x2={x2}, y2={y2}")
+                            raise ValueError(f"Invalid bbox dimensions")
+                        
+                        # Clip bbox to image boundaries
+                        x1_clipped = max(0, min(x1, img_w - 1))
+                        y1_clipped = max(0, min(y1, img_h - 1))
+                        x2_clipped = max(x1_clipped + 1, min(x2, img_w))
+                        y2_clipped = max(y1_clipped + 1, min(y2, img_h))
+                        
+                        # Check minimum face size
+                        crop_width = x2_clipped - x1_clipped
+                        crop_height = y2_clipped - y1_clipped
+                        if crop_width < 16 or crop_height < 16:
+                            logger.warning(f"Face crop too small in WebSocket ({crop_width}x{crop_height}px)")
+                            raise ValueError(f"Face too small for anti-spoof check")
+                        
+                        face_crop = image[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
+                        antispoof_result = antispoof_predictor.predict(face_crop)
+                        
+                        if not antispoof_result.is_live:
+                            await websocket.send_json({
+                                "type": "result",
+                                "name": None,
+                                "confidence": 0.0,
+                                "is_recognized": False,
+                                "message": "Spoof detected",
+                                "liveness": {
+                                    "status": "spoof",
+                                    "is_live": False,
+                                    "real_score": float(antispoof_result.real_score),
+                                    "fake_score": float(antispoof_result.fake_score)
+                                }
+                            })
+                            continue
+                    except Exception as e:
+                        logger.error(f"Anti-spoof check failed in WebSocket: {type(e).__name__}: {e}")
+                        antispoof_result = None
+                    
                     # Tracking + gating + batch search
                     now_ts = time.time()
                     session_key = f"ws:{id(websocket)}"
@@ -468,21 +417,33 @@ async def websocket_recognize(websocket: WebSocket):
                     elif len(embeddings_to_search) > 0 and largest_index in face_indices:
                         result = results[face_indices.index(largest_index)] if len(results) > 0 else None
                     
-                    if result is not None and result.get('confidence', 0) >= 0.65:
+                    if result is not None and result.get('confidence', 0) >= 0.5:
                         await websocket.send_json({
                             "type": "result",
-                            "name": result.get('name'),
+                            "person_id": result.get('person_id'),  # Send as string to preserve BIGINT precision
                             "confidence": float(result.get('confidence', 0)),
                             "is_recognized": True,
-                            "message": "Face recognized"
+                            "message": "Face recognized",
+                            "liveness": {
+                                "status": "live",
+                                "is_live": True,
+                                "real_score": float(antispoof_result.real_score) if antispoof_result else 0.0,
+                                "fake_score": float(antispoof_result.fake_score) if antispoof_result else 0.0
+                            }
                         })
                     else:
                         await websocket.send_json({
                             "type": "result",
-                            "name": None,
+                            "person_id": None,
                             "confidence": float(result.get('confidence', 0)) if result is not None else 0.0,
                             "is_recognized": False,
-                            "message": "Unknown face"
+                            "message": "Unknown face",
+                            "liveness": {
+                                "status": "live",
+                                "is_live": True,
+                                "real_score": float(antispoof_result.real_score) if antispoof_result else 0.0,
+                                "fake_score": float(antispoof_result.fake_score) if antispoof_result else 0.0
+                            }
                         })
                 
                 except Exception as e:
@@ -494,6 +455,12 @@ async def websocket_recognize(websocket: WebSocket):
             
             elif message.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})
+            else:
+                logger.warning(f"Unknown message type: {message.get('type')}")
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Unknown message type: {message.get('type')}"
+                })
     
     except WebSocketDisconnect:
         logger.info("WebSocket client disconnected")
@@ -504,9 +471,7 @@ async def websocket_recognize(websocket: WebSocket):
         except:
             pass
 
-# ==========================
 # COLLECTION MANAGEMENT
-# ==========================
 @app.get("/collection/stats")
 async def get_collection_stats():
     """Get statistics about the face collection"""
@@ -530,9 +495,7 @@ async def delete_person(person_id: str):
         logger.error(f"Delete error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================
 # RUN SERVER
-# ==========================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

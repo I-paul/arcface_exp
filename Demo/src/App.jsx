@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import MultiCamRecognition from './components/MultiCamRecognition';
+import IPCameraRecognition from './components/IPCameraRecognition';
 import EnrollSocket from './components/EnrollSocket';
 import CameraManagement from './components/CameraManagement';
 
@@ -57,19 +57,19 @@ export default function App() {
             className={tab === NAV.CAMERAS ? 'active' : ''}
             onClick={() => setTab(NAV.CAMERAS)}
           >
-            📹 Camera Management
+            Camera Management
           </button>
           <button
             className={tab === NAV.RECOGNITION ? 'active' : ''}
             onClick={() => setTab(NAV.RECOGNITION)}
           >
-            🎥 Live Recognition
+            Live Recognition
           </button>
           <button
             className={tab === NAV.ENROLL ? 'active' : ''}
             onClick={() => setTab(NAV.ENROLL)}
           >
-            ➕ Face Enrollment
+            Face Enrollment
           </button>
         </nav>
       </header>
@@ -85,7 +85,7 @@ export default function App() {
           />
         )}
         {tab === NAV.RECOGNITION && (
-          <MultiCamRecognition cameras={cameras} isCamerasLoaded={camerasLoaded} />
+          <IPCameraRecognition cameras={cameras} isCamerasLoaded={camerasLoaded} />
         )}
         {tab === NAV.ENROLL && <EnrollSocket />}
       </main>

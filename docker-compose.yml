@@ -1,11 +1,8 @@
 services:
 
-  # ============================================
   # ETCD - Milvus Metadata Storage
-  # ============================================
   etcd:
     image: quay.io/coreos/etcd:v3.5.5
-    container_name: milvus-etcd
     environment:
       - ETCD_AUTO_COMPACTION_MODE=revision
       - ETCD_AUTO_COMPACTION_RETENTION=1000
@@ -13,7 +10,7 @@ services:
       - ETCD_SNAPSHOT_COUNT=50000
     volumes:
       - etcd_data:/etcd
-    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    command: etcd -advertise-client-urls=http://etcd:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
     healthcheck:
       test: ["CMD", "etcdctl", "endpoint", "health"]
       interval: 30s
@@ -22,12 +19,9 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # MINIO - Milvus Object Storage
-  # ============================================
   minio:
     image: minio/minio:RELEASE.2023-03-20T20-16-18Z
-    container_name: milvus-minio
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
@@ -42,12 +36,9 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # MILVUS - Vector Database
-  # ============================================
   milvus:
     image: milvusdb/milvus:v2.4.0
-    container_name: milvus
     command: ["milvus", "run", "standalone"]
     ports:
       - "19530:19530"
@@ -69,20 +60,10 @@ services:
       - minio
     networks:
       - app-network
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-        reservations:
-          memory: 1G
 
-  # ============================================
   # ATTU - Milvus GUI
-  # ============================================
   attu:
     image: zilliz/attu:latest
-    container_name: milvus-attu
     ports:
       - "8888:3000"
     environment:
@@ -92,14 +73,14 @@ services:
     depends_on:
       - milvus
 
-  # ============================================
   # REDIS - Job Queue
-  # ============================================
   redis:
     image: redis:7
-    container_name: redis
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 30s
@@ -108,14 +89,11 @@ services:
       start_period: 10s
     networks:
       - app-network
-    command: redis-server --appendonly yes
 
-  # ============================================
+
   # POSTGRES - Primary Database
-  # ============================================
   postgres:
     image: postgres:15
-    container_name: postgres
     ports:
       - "5432:5432"
     environment:
@@ -132,18 +110,16 @@ services:
     networks:
       - app-network
 
-  # ============================================
   # ML SERVICE - Face Recognition API
-  # ============================================
   ml_service:
     build: ./ml_service
-    container_name: ml_service
     ports:
       - "8000:8000"
     env_file:
       - .env
     volumes:
       - ./ml_service:/app
+      - ml_service_data:/app/data
     depends_on:
       milvus:
         condition: service_healthy
@@ -153,27 +129,19 @@ services:
       - PYTHONUNBUFFERED=1
       - MILVUS_HOST=milvus
       - MILVUS_PORT=19530
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    gpus: all
 
-  # ============================================
   # BACKEND - Express API Server
-  # ============================================
   backend:
     build: ./Backend
-    container_name: backend
     ports:
       - "3000:3000"
     env_file:
       - .env
+    command: sh -c "npm run migrate && npm start"
     volumes:
       - ./Backend:/app
-      - /app/node_modules
+      - backend_node_modules:/app/node_modules
     depends_on:
       milvus:
         condition: service_healthy
@@ -191,25 +159,25 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DB_HOST=postgres
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
 
-  # ============================================
   # WORKER - Face Recognition Queue Processor
-  # ============================================
   worker:
     build: ./Backend
-    container_name: face-worker
     command: node src/workers/face.worker.js
     env_file:
       - .env
     volumes:
       - ./Backend:/app
-      - /app/node_modules
+      - worker_node_modules:/app/node_modules
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
       ml_service:
+        condition: service_started
+      backend:
         condition: service_started
     networks:
       - app-network
@@ -219,19 +187,20 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DB_HOST=postgres
+      - BACKEND_URL=http://backend:3000
 
-# ============================================
 # NETWORKS
-# ============================================
 networks:
   app-network:
     driver: bridge
 
-# ============================================
 # VOLUMES
-# ============================================
 volumes:
+  ml_service_data:
   etcd_data:
   minio_data:
   milvus_data:
   postgres_data:
+  redis_data:
+  backend_node_modules:
+  worker_node_modules:

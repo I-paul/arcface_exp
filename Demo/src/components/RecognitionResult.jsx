@@ -9,13 +9,13 @@ export default function RecognitionResult({ result }) {
     );
   }
 
-  const { status, name, confidence, is_recognized, message, timestamp } = result;
+  const { status, detected, name, confidence, message, timestamp } = result;
 
   if (status === 'error') {
     return (
       <div className="recognition-result error">
         <div className="result-header">
-          <span className="result-status error-status">✗ Error</span>
+          <span className="result-status error-status">Error</span>
           <span className="result-time">{timestamp}</span>
         </div>
         <p className="error-message">{message}</p>
@@ -24,15 +24,15 @@ export default function RecognitionResult({ result }) {
   }
 
   return (
-    <div className={`recognition-result success ${is_recognized ? 'recognized' : 'not-recognized'}`}>
+    <div className={`recognition-result success ${detected ? 'recognized' : 'not-recognized'}`}>
       <div className="result-header">
-        <span className={`result-status ${is_recognized ? 'recognized-status' : 'unknown-status'}`}>
-          {is_recognized ? '✓ Recognized' : '? Unknown'}
+        <span className={`result-status ${detected ? 'recognized-status' : 'unknown-status'}`}>
+          {detected ? 'Detected' : 'Not Detected'}
         </span>
         <span className="result-time">{timestamp}</span>
       </div>
 
-      {is_recognized && name && (
+      {detected && name && (
         <div className="result-content">
           <div className="result-row">
             <span className="result-label">Name:</span>
@@ -55,9 +55,9 @@ export default function RecognitionResult({ result }) {
         </div>
       )}
 
-      {!is_recognized && (
+      {!detected && (
         <div className="result-content">
-          <p className="unknown-message">No matching face found in database</p>
+          <p className="unknown-message">No matching face detected in database</p>
           {message && (
             <p className="result-message">{message}</p>
           )}

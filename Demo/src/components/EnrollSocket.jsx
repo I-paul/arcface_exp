@@ -18,6 +18,7 @@ export default function EnrollSocket() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [progress, setProgress] = useState('');
+  const [lastResponse, setLastResponse] = useState(null);
 
   // Refs
   const videoRef = useRef(null);
@@ -29,6 +30,7 @@ export default function EnrollSocket() {
   const startCamera = useCallback(async () => {
     setError('');
     setMessage('');
+    setLastResponse(null);
 
     if (useIpWebcam) {
       setVideoReady(true);
@@ -95,6 +97,7 @@ export default function EnrollSocket() {
 
     setError('');
     setMessage('');
+    setLastResponse(null);
     setIsCapturing(true);
 
     try {
@@ -218,9 +221,14 @@ export default function EnrollSocket() {
       });
 
       const result = await response.json();
+      setLastResponse({
+        ok: response.ok,
+        status: response.status,
+        body: result
+      });
 
       if (response.ok) {
-        setMessage(`✓ ${result.message}`);
+        setMessage(result.message);
         setProgress('');
         // Reset form
         setEmpId('');
@@ -234,6 +242,11 @@ export default function EnrollSocket() {
     } catch (err) {
       setError('Failed to submit enrollment: ' + err.message);
       console.error('Enrollment error:', err);
+      setLastResponse({
+        ok: false,
+        status: 0,
+        body: { message: err.message }
+      });
     } finally {
       setIsSubmitting(false);
     }
@@ -406,6 +419,13 @@ export default function EnrollSocket() {
       {/* Messages */}
       {error && <div className="error">{error}</div>}
       {message && <div className="success">{message}</div>}
+
+      {lastResponse && (
+        <div className="response-panel">
+          <h4>Backend Response</h4>
+          <pre className="json-block">{JSON.stringify(lastResponse, null, 2)}</pre>
+        </div>
+      )}
 
       {/* Instructions */}
       <div style={{ marginTop: '16px', padding: '12px', background: '#0b1222', borderRadius: '8px', fontSize: '13px' }}>
