@@ -62,17 +62,6 @@ const enrollEmployee = async (req, res) => {
 			return res.status(500).json({ message: 'ML service did not return person_id' });
 		}
 
-		// Check if any spoofed images were detected
-		if (mlData.message?.includes('spoofed')) {
-			return res.status(400).json({
-				success: false,
-				message: mlData.message,
-				error: 'spoof_detected',
-				retry: true,
-				details: 'Some images were detected as spoofed. Please provide clear, well-lit images of a live person.'
-			});
-		}
-
 		// Store in database with UUID generation
 		const insertQuery = `
 			INSERT INTO employees (id, emp_id, name, milvus_id, enrolled_at)

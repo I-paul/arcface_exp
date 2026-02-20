@@ -151,6 +151,12 @@ export default function IPCameraRecognition({ cameras: dbCameras = [], isCameras
       const formData = new FormData();
       formData.append('file', frameBlob, 'frame.jpg');
       formData.append('cam_id', feed.cam_id);
+      
+      // Add site_id if available from database camera
+      const dbCamera = dbCameras.find(c => c.cam_id === feed.cam_id);
+      if (dbCamera?.site_id) {
+        formData.append('site_id', dbCamera.site_id);
+      }
 
       // Send to backend for recognition
       let recognitionResponse;
@@ -308,36 +314,28 @@ export default function IPCameraRecognition({ cameras: dbCameras = [], isCameras
       return <div className="error-box">{result.lastRecognition.error}</div>;
     }
 
-    const { is_recognized, person_id, confidence, liveness, name, message } = result.lastRecognition;
+    const { detected, name, confidence, message } = result.lastRecognition;
     const timeStr = result.timestamp ? `at ${result.timestamp}` : '';
 
     return (
       <div className="recognition-result">
         <div className="result-timestamp">{timeStr}</div>
-        <div className={`status ${is_recognized ? 'recognized' : 'unrecognized'}`}>
-          {is_recognized ? '✓ Recognized' : '✗ Not Recognized'}
+        <div className={`status ${detected ? 'recognized' : 'unrecognized'}`}>
+          {detected ? '✓ Detected' : '✗ Not Detected'}
         </div>
-        {message && (
-          <div className="detail">
-            <strong>Message:</strong> {message}
-          </div>
-        )}
-        {is_recognized && (
+        {detected && name && (
           <>
             <div className="detail name-display">
-              <strong>Person:</strong> {name || person_id || 'Unknown'}
+              <strong>Person:</strong> {name}
             </div>
             <div className="detail">
               <strong>Confidence:</strong> {(confidence * 100).toFixed(2)}%
             </div>
           </>
         )}
-        {liveness && (
-          <div className={`liveness ${liveness.is_live ? 'live' : 'spoof'}`}>
-            <strong>Liveness:</strong> {liveness.status || (liveness.is_live ? 'Live' : 'Spoof')}
-            {liveness.real_score && (
-              <span> (Real: {(liveness.real_score * 100).toFixed(2)}%)</span>
-            )}
+        {!detected && message && (
+          <div className="detail">
+            <strong>Status:</strong> {message}
           </div>
         )}
       </div>

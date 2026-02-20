@@ -177,6 +177,8 @@ services:
         condition: service_healthy
       ml_service:
         condition: service_started
+      backend:
+        condition: service_started
     networks:
       - app-network
     environment:
@@ -185,6 +187,7 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - DB_HOST=postgres
+      - BACKEND_URL=http://backend:3000
 
 # NETWORKS
 networks:

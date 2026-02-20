@@ -40,4 +40,4 @@ CREATE TABLE IF NOT EXISTS "attendance_events" (
 );
 
 -- CreateIndex
-CREATE INDEX IF NOT EXISTS "idx_events_emp_time" ON "attendance_events" ("emp_id" DESC, "created_at" DESC);
+CREATE INDEX IF NOT EXISTS "idx_events_emp_time" ON "attendance_events" ("emp_id", "event_time" DESC);

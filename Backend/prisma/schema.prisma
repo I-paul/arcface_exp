@@ -48,6 +48,6 @@ model AttendanceEvent {
   employee         Employee? @relation(fields: [empId], references: [empId], onDelete: Cascade, onUpdate: Cascade)
   camera           Camera?   @relation(fields: [camId], references: [camId], onDelete: SetNull, onUpdate: Cascade)
 
-  @@index([empId, createdAt(sort: Desc)], name: "idx_events_emp_time")
+  @@index([empId, eventTime(sort: Desc)], name: "idx_events_emp_time")
   @@map("attendance_events")
 }
