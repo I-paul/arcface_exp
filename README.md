@@ -426,13 +426,6 @@ Or run without GPU support by setting the environment variable before starting:
 FORCE_GPU=False docker compose up --build
 ```
 
-### Face not detected / recognition not working
-
-- Ensure sufficient lighting and that the face is fully visible.
-- Lower `FACE_DETECTION_THRESHOLD` (e.g. `0.3`) for more permissive detection.
-- Lower `FACE_RECOGNITION_THRESHOLD` (e.g. `0.5`) for more permissive recognition.
-- Check `/health` on the ML Service to confirm GPU and Milvus connectivity.
-
 ### Milvus connection refused
 
 Milvus takes up to 90 seconds to become healthy on first start. The ML Service and Backend will wait for it via Docker health checks. If running locally, wait for Milvus to be ready before starting other services:
