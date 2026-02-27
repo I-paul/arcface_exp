@@ -1,7 +1,5 @@
 # ArcFace Experiment — Face Recognition & Attendance System
 
-A production-ready face recognition and automated attendance system built with ArcFace embeddings, liveness detection, and a multi-service architecture.
-
 ---
 
 ## Table of Contents
