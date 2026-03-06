@@ -63,7 +63,6 @@ Thumbs.db
 
 # ML Models & Weights
 ml_service/models/*.pth
-ml_service/models/*.onnx
 ml_service/weights/*.pth
 
 # Data & Databases
@@ -71,7 +70,4 @@ celeba_subset/
 celeba_wds/
 embeddings_db/
 volumes/
-
-# Project Specific
-webcam_conn.py
 

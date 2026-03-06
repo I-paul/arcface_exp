@@ -4,7 +4,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
 
 // Predefined IP camera URLs
 const IP_CAMERA_URLS = [
-  { label: 'Front Entrance', url: 'http://192.168.1.3:8080/video' },
+  { label: 'Front Entrance', url: 'http://10.50.3.195:8080/video' },
   { label: 'Main Gate', url: 'http://192.168.1.101:8080/video' },
 ];
 
