@@ -1,9 +1,10 @@
 """
 Simple IoU-based face tracker for gating recognition calls.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 import time
+import numpy as np
 
 
 @dataclass
@@ -14,6 +15,11 @@ class Track:
     last_embed_ts: Optional[float] = None
     last_confidence: Optional[float] = None
     last_result: Optional[dict] = None
+    embeddings: List[np.ndarray] = field(default_factory=list)
+    recognition_history: List[dict] = field(default_factory=list)
+    track_confidence: float = 0.0
+    last_search_time: float = 0.0
+    first_seen_ts: Optional[float] = None
 
 
 def iou(box_a, box_b) -> float:
@@ -71,7 +77,8 @@ class SimpleTracker:
                 new_track = Track(
                     track_id=self._next_id,
                     bbox=bbox,
-                    last_seen=now
+                    last_seen=now,
+                    first_seen_ts=now
                 )
                 self._tracks.append(new_track)
                 assigned_track_ids.append(new_track.track_id)

@@ -187,7 +187,11 @@ For GPU (CUDA 12.1):
 ```bash
 pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu121
 pip install -r requirements.txt
+pip uninstall -y onnxruntime
+pip install --force-reinstall onnxruntime-gpu==1.17.1
 ```
+
+`insightface` may pull CPU `onnxruntime` as a transitive dependency. Reinstalling `onnxruntime-gpu` as the last step ensures `CUDAExecutionProvider` is retained.
 
 For CPU only:
 
@@ -205,6 +209,8 @@ export MILVUS_HOST=localhost
 export MILVUS_PORT=19530
 export FORCE_GPU=True          # Set False if no GPU
 export FACE_DETECTION_THRESHOLD=0.5
+export FACE_DET_SIZES=640,896,1024
+export FACE_DET_THRESHOLDS=0.5,0.45,0.4
 export FACE_RECOGNITION_THRESHOLD=0.6
 ```
 
@@ -309,6 +315,8 @@ All configuration is driven by the `.env` file in the project root. Copy `.env.e
 | `FORCE_GPU` | `True` | Enable GPU acceleration (`False` for CPU-only) |
 | `GPU_MEMORY_FRACTION` | `0.8` | Fraction of GPU memory to allocate |
 | `FACE_DETECTION_THRESHOLD` | `0.5` | Minimum face detection confidence |
+| `FACE_DET_SIZES` | `640,896,1024` | Detector input sizes tried in sequence (helps tiny faces) |
+| `FACE_DET_THRESHOLDS` | `0.5,0.45,0.4` | Per-size detection thresholds aligned with `FACE_DET_SIZES` |
 | `FACE_RECOGNITION_THRESHOLD` | `0.6` | Minimum recognition similarity score |
 | `WORKERS` | `4` | Uvicorn worker count |
 
@@ -414,6 +422,36 @@ docker compose up --build
 
 ### ML Service fails to start (GPU error)
 
+The service now enforces GPU availability based on ONNX Runtime's `CUDAExecutionProvider` (not only PyTorch CUDA).
+
+1) Verify ONNX providers:
+
+```bash
+cd ml_service
+python scripts/check_onnx_providers.py
+```
+
+If `CUDAExecutionProvider` is missing, your `onnxruntime-gpu` build or CUDA runtime libraries are incompatible.
+
+Windows note for newer GPUs (for example RTX 50-series): if provider creation fails with missing `cudnn64_8.dll` or `cublasLt64_11.dll`, your wheel is too old for your local CUDA/cuDNN stack. For local Windows venv usage, install:
+
+```bash
+pip uninstall -y onnxruntime onnxruntime-gpu
+pip install --force-reinstall onnxruntime-gpu==1.20.0
+```
+
+This version uses CUDA 12 and cuDNN 9 on Windows. Docker images based on CUDA 12.1 + cuDNN 8 may still require the older pinned wheel.
+
+2) Verify PyTorch GPU compatibility:
+
+```bash
+python scripts/check_torch_gpu.py
+```
+
+If your GPU architecture is newer than your installed PyTorch wheel supports, install a newer PyTorch build matching your CUDA stack.
+
+3) For CPU fallback during debugging:
+
 If you do not have an NVIDIA GPU, set `FORCE_GPU=False` in `.env` and update `ml_service/main.py` line:
 
 ```python
@@ -424,6 +462,24 @@ Or run without GPU support by setting the environment variable before starting:
 
 ```bash
 FORCE_GPU=False docker compose up --build
+```
+
+### No faces detected on CCTV footage
+
+Small/distant faces are harder for SCRFD at a single detector size. The service now retries with larger detector sizes and lower thresholds.
+
+Tune in `.env`:
+
+```env
+FACE_DET_SIZES=640,896,1024
+FACE_DET_THRESHOLDS=0.5,0.45,0.4
+```
+
+For very dense or distant CCTV scenes, try:
+
+```env
+FACE_DET_SIZES=896,1024,1280
+FACE_DET_THRESHOLDS=0.45,0.40,0.35
 ```
 
 ### Milvus connection refused

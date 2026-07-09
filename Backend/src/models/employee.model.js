@@ -41,6 +41,7 @@ const enrollEmployee = async (req, res) => {
 		// Send to ML service for enrollment
 		const form = new FormData();
 		form.append('name', name);
+		form.append('emp_id', emp_id);
 		req.files.forEach((file) => {
 			form.append('files', fs.createReadStream(file.path), file.originalname);
 		});
@@ -89,6 +90,102 @@ const enrollEmployee = async (req, res) => {
 		const status = error.response?.status || 500;
 		const detail = error.response?.data || { message: 'Enrollment failed' };
 		console.error('[ERROR] Enrollment error:', detail);
+		return res.status(status).json(detail);
+	} finally {
+		filesToCleanup.forEach((filePath) => {
+			try {
+				if (fs.existsSync(filePath)) {
+					fs.unlinkSync(filePath);
+					console.log(`[CLEANUP] Deleted temp file: ${filePath}`);
+				}
+			} catch (err) {
+				console.error(`[CLEANUP] Failed to delete ${filePath}:`, err.message);
+			}
+		});
+	}
+};
+
+/**
+ * RE-ENROLLMENT: Call ML service /re-enroll endpoint to register versioned templates from CCTV crops.
+ * This uploads face crops to the ML service which returns a person_id (milvus_id).
+ * The employee is then updated in Postgres with the new milvus_id.
+ */
+const reEnrollEmployee = async (req, res) => {
+	const filesToCleanup = (req.files || []).map((file) => file.path);
+	try {
+		const { emp_id } = req.body;
+		
+		if (!emp_id) {
+			return res.status(400).json({ message: 'emp_id is required for re-enrollment' });
+		}
+		if (!req.files || req.files.length < 3) {
+			return res.status(400).json({ message: 'At least 3 face crop files are required for re-enrollment' });
+		}
+		if (req.files.length > 20) {
+			return res.status(400).json({ message: 'Maximum 20 crops allowed for re-enrollment' });
+		}
+
+		// Verify employee exists in PostgreSQL
+		const checkQuery = 'SELECT name FROM employees WHERE emp_id = $1';
+		const checkResult = await pool.query(checkQuery, [emp_id]);
+
+		if (checkResult.rows.length === 0) {
+			return res.status(404).json({ message: 'Employee not found' });
+		}
+		
+		const name = checkResult.rows[0].name;
+
+		// Send to ML service for re-enrollment
+		const form = new FormData();
+		form.append('emp_id', emp_id);
+		req.files.forEach((file) => {
+			form.append('files', fs.createReadStream(file.path), file.originalname);
+		});
+
+		const { data: mlData } = await axios.post(`${ML_SERVICE_URL}/re-enroll`, form, {
+			headers: form.getHeaders(),
+			timeout: 30000,
+		});
+
+		// Validate ML service response
+		if (!mlData || !mlData.success) {
+			const errorMsg = mlData?.message || 'ML service re-enrollment failed';
+			return res.status(400).json({ message: errorMsg });
+		}
+
+		const milvus_id = mlData.person_id;
+		if (!milvus_id) {
+			return res.status(500).json({ message: 'ML service did not return person_id' });
+		}
+
+		// Update milvus_id in Postgres for backwards compatibility
+		const updateQuery = `
+			UPDATE employees
+			SET milvus_id = $1
+			WHERE emp_id = $2
+			RETURNING id, emp_id, name, milvus_id, enrolled_at;
+		`;
+
+		const { rows } = await pool.query(updateQuery, [milvus_id, emp_id]);
+		const employee = rows[0];
+
+		console.log(`[RE-ENROLL] Employee ${emp_id} (${name}) re-enrolled with milvus_id ${milvus_id}`);
+
+		return res.status(200).json({
+			success: true,
+			message: `Employee ${name} re-enrolled successfully using CCTV crops`,
+			employee: {
+				id: employee.id,
+				emp_id: employee.emp_id,
+				name: employee.name,
+				milvus_id: employee.milvus_id,
+				enrolled_at: employee.enrolled_at
+			}
+		});
+	} catch (error) {
+		const status = error.response?.status || 500;
+		const detail = error.response?.data || { message: 'Re-enrollment failed' };
+		console.error('[ERROR] Re-enrollment error:', detail);
 		return res.status(status).json(detail);
 	} finally {
 		filesToCleanup.forEach((filePath) => {
@@ -253,6 +350,7 @@ const deleteEmployee = async (req, res) => {
 
 module.exports = {
 	enrollEmployee,
+	reEnrollEmployee,
 	recognizeFace,
 	getJobStatus,
 	getAllEmployees,

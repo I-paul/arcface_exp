@@ -10,7 +10,10 @@ import numpy as np
 import insightface
 from insightface.app import FaceAnalysis
 import torch
+import onnxruntime as ort
+import os
 import logging
+import time
 from preprocessing.preprocessor import preprocess
 from preprocessing.schemas import PreprocessRequest
 
@@ -24,6 +27,11 @@ class FaceProcessor:
     # Configuration
     EMBEDDING_DIM = 512
     OCCLUSION_THRESHOLD = 0.6
+    DEFAULT_DET_CONFIGS = [
+        (640, 0.50),
+        (896, 0.45),
+        (1024, 0.40),
+    ]
     
     def __init__(self, force_gpu: bool = True):
         """Initialize InsightFace model with GPU support
@@ -33,41 +41,49 @@ class FaceProcessor:
         """
         logger.info("Initializing FaceProcessor...")
         
-        # Check GPU availability
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.available_ort_providers = ort.get_available_providers()
+        self.cuda_provider_available = "CUDAExecutionProvider" in self.available_ort_providers
+        self.torch_cuda_available = bool(torch.cuda.is_available())
+
+        self.device = "cuda" if self.cuda_provider_available else "cpu"
         logger.info(f"Using device: {self.device}")
-        
-        # Force GPU for recognition and enrollment tasks
-        if force_gpu and self.device != "cuda":
+        logger.info(f"ONNX Runtime providers: {self.available_ort_providers}")
+
+        # Force GPU for recognition and enrollment tasks based on ONNX runtime provider,
+        # since InsightFace runs on ONNX Runtime rather than PyTorch tensors.
+        if force_gpu and not self.cuda_provider_available:
             raise RuntimeError(
-                "GPU is required for face recognition and enrollment tasks. "
-                "CUDA is not available. Please check your GPU setup and CUDA installation."
+                "GPU is required but CUDAExecutionProvider is not available in ONNX Runtime. "
+                "Install a compatible onnxruntime-gpu build and ensure CUDA/cuDNN runtime libraries are available."
             )
-        
-        if self.device == "cuda":
-            logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-            logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-            
-            # CUDA optimizations for better performance
+
+        if self.torch_cuda_available:
+            logger.info(f"PyTorch GPU: {torch.cuda.get_device_name(0)}")
+            logger.info(f"PyTorch GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+
+            # CUDA optimizations for better performance where torch kernels are used.
             torch.backends.cudnn.enabled = True
             torch.backends.cudnn.benchmark = True
-            logger.info("CUDA optimizations enabled (cuDNN benchmark mode)")
-        
-        # Configure ONNX Runtime providers - GPU ONLY for production
-        if self.device == "cuda":
+            logger.info("PyTorch CUDA optimizations enabled (cuDNN benchmark mode)")
+        else:
+            logger.warning("PyTorch CUDA is not available; torch-based ops will run on CPU")
+
+        # Configure ONNX Runtime providers
+        if self.cuda_provider_available:
             providers = [
                 ("CUDAExecutionProvider", {
-                    'device_id': 0,
-                    'arena_extend_strategy': 'kNextPowerOfTwo',
-                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB limit
-                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                    'do_copy_in_default_stream': True,
-                })
+                    "device_id": 0,
+                    "arena_extend_strategy": "kNextPowerOfTwo",
+                    "gpu_mem_limit": 2 * 1024 * 1024 * 1024,
+                    "cudnn_conv_algo_search": "EXHAUSTIVE",
+                    "do_copy_in_default_stream": True,
+                }),
+                "CPUExecutionProvider",
             ]
-            logger.info("Using CUDAExecutionProvider with optimized settings")
+            logger.info("Using CUDAExecutionProvider with CPU fallback")
         else:
-            providers = ["CPUExecutionProvider"]  # Fallback
-            logger.warning("Running on CPU - Performance will be degraded")
+            providers = ["CPUExecutionProvider"]
+            logger.warning("CUDAExecutionProvider unavailable - running InsightFace on CPU")
         
         # Initialize FaceAnalysis
         self.app = FaceAnalysis(
@@ -76,9 +92,21 @@ class FaceProcessor:
             allowed_modules=None
         )
         
-        # Prepare with GPU context (ctx_id=0 is GPU 0)
-        ctx_id = 0 if self.device == "cuda" else -1
-        self.app.prepare(ctx_id=ctx_id, det_size=(640, 640), det_thresh=0.5)
+        self.ctx_id = 0 if self.device == "cuda" else -1
+        self.detector_configs = self._load_detector_configs()
+        self.base_det_size, self.base_det_thresh = self.detector_configs[0]
+
+        # Resolution caching, escalation cooldown, and idle reset tracking
+        self.active_det_config = self.detector_configs[0]
+        self.last_escalation_time = 0.0
+        self.escalation_cooldown_seconds = 2.0  # Cooldown between escalation attempts
+        self.last_face_seen_time = 0.0          # Track last time a face was successfully detected
+        self.idle_reset_timeout_seconds = 5.0   # Reset to base resolution if idle for 5s
+        self._prepared_size = None
+        self._prepared_thresh = None
+
+        # Prepare with base detector config.
+        self._prepare_detector(self.base_det_size, self.base_det_thresh)
 
         # Log actual runtime providers to verify GPU execution
         providers_info = self.get_runtime_providers()
@@ -88,6 +116,43 @@ class FaceProcessor:
             logger.warning("Could not determine runtime providers from InsightFace models")
         
         logger.info(f"FaceProcessor initialized successfully on {self.device.upper()}")
+
+    def _load_detector_configs(self):
+        """Load detector retry configs from env or defaults."""
+        configs = []
+
+        raw_sizes = os.getenv("FACE_DET_SIZES", "")
+        raw_thresholds = os.getenv("FACE_DET_THRESHOLDS", "")
+
+        if raw_sizes and raw_thresholds:
+            try:
+                sizes = [int(x.strip()) for x in raw_sizes.split(",") if x.strip()]
+                thresholds = [float(x.strip()) for x in raw_thresholds.split(",") if x.strip()]
+                if len(sizes) == len(thresholds) and len(sizes) > 0:
+                    configs = list(zip(sizes, thresholds))
+            except Exception:
+                logger.warning("Invalid FACE_DET_SIZES/FACE_DET_THRESHOLDS env format; using defaults")
+
+        if not configs:
+            configs = list(self.DEFAULT_DET_CONFIGS)
+
+        logger.info(f"Face detector retry configs: {configs}")
+        return configs
+
+    def _prepare_detector(self, det_size: int, det_thresh: float) -> None:
+        if self._prepared_size == det_size and self._prepared_thresh == det_thresh:
+            return
+        self.app.prepare(ctx_id=self.ctx_id, det_size=(det_size, det_size), det_thresh=det_thresh)
+        self._prepared_size = det_size
+        self._prepared_thresh = det_thresh
+
+    def _detect_with_config(self, image: np.ndarray, det_size: int, det_thresh: float) -> list:
+        self._prepare_detector(det_size, det_thresh)
+        faces = self.app.get(image)
+        logger.info(
+            f"Detection attempt det_size={det_size}, det_thresh={det_thresh:.2f} -> {len(faces)} face(s)"
+        )
+        return faces
     
     def is_gpu_available(self) -> bool:
         """Check if GPU is available"""
@@ -116,7 +181,7 @@ class FaceProcessor:
     
     def detect_faces(self, image: np.ndarray) -> list:
         """
-        Detect faces in an image
+        Detect faces in an image with resolution caching and escalation cooldown.
         
         Args:
             image: Input image (BGR format)
@@ -125,9 +190,36 @@ class FaceProcessor:
             List of detected face objects
         """
         try:
-            faces = self.app.get(image)
-            logger.info(f"Detected {len(faces)} face(s)")
-            return faces
+            now = time.time()
+            # Idle Reset: if no faces have been seen for the timeout, reset active resolution to base config.
+            if self.active_det_config != self.detector_configs[0] and (now - self.last_face_seen_time) > self.idle_reset_timeout_seconds:
+                logger.info(f"Idle timeout reached. Resetting active detector resolution to base config {self.detector_configs[0]}")
+                self.active_det_config = self.detector_configs[0]
+
+            # First attempt: use the current active resolution config
+            det_size, det_thresh = self.active_det_config
+            faces = self._detect_with_config(image, det_size, det_thresh)
+            if faces:
+                self.last_face_seen_time = now
+                return faces
+
+            # If no faces are found, only escalate if we are not in cooldown.
+            if (now - self.last_escalation_time) >= self.escalation_cooldown_seconds:
+                self.last_escalation_time = now
+                # Retry other resolutions (skipping the one we already tried)
+                for config in self.detector_configs:
+                    if config == self.active_det_config:
+                        continue
+                    esc_size, esc_thresh = config
+                    faces = self._detect_with_config(image, esc_size, esc_thresh)
+                    if faces:
+                        logger.info(f"Escalation success: caching config {config} as active")
+                        self.active_det_config = config
+                        self.last_face_seen_time = now
+                        return faces
+
+            logger.info("Detected 0 face(s) (escalation bypassed or failed)")
+            return []
         except Exception as e:
             logger.error(f"Face detection error: {str(e)}")
             return []

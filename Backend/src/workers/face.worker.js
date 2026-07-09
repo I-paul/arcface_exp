@@ -9,6 +9,9 @@ dotenv.config();
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL;
 const BACKEND_URL = process.env.BACKEND_URL || 'http://backend:3000';
 
+// In-memory cache for attendance cooldowns: { emp_id: timestamp_ms }
+const attendanceCooldownCache = {};
+
 /**
  * Send image to ML service via WebSocket for face recognition
  * @param {string} imageBase64 - Base64 encoded image
@@ -148,90 +151,16 @@ const worker = new Worker(
 			console.log(`[WORKER] Sending image to ML service via WebSocket: ${ML_SERVICE_URL}/ws/recognize`);
 			const mlResponse = await recognizeViaWebSocket(imageBase64);
 
-			await job.updateProgress(50);
+			await job.updateProgress(80);
 
-			// Initialize response object with bare minimum
+			console.log("[WORKER] ML Response:", JSON.stringify(mlResponse, null, 2));
+
+			// Forward the payload unchanged
 			const response = {
-				detected: mlResponse?.is_recognized || false,
-				name: null,
-				emp_id: null,
-				confidence: mlResponse?.confidence || 0,
-				message: mlResponse?.message || 'Recognition complete'
+				frame_id: mlResponse?.frame_id || null,
+				faces: mlResponse?.faces || [],
+				message: 'Recognition complete'
 			};
-
-			// If not recognized, return early
-			if (!response.detected || !mlResponse?.person_id) {
-				await job.updateProgress(100);
-				return response;
-			}
-
-			// EMPLOYEE LOOKUP: Resolve name from milvus_id (keep as string for precision)
-			try {
-				const milvusId = mlResponse.person_id;  // Keep as string - no parseInt!
-				
-				const query = 'SELECT emp_id, name FROM employees WHERE milvus_id = $1';
-				const { rows } = await pool.query(query, [milvusId]);
-				
-				if (!rows.length) {
-					console.warn(`[WORKER] No employee found for milvus_id: ${milvusId}`);
-					response.message = 'Face recognized but employee not found in database';
-					await job.updateProgress(100);
-					return response;
-				}
-
-				response.name = rows[0].name;
-				response.emp_id = rows[0].emp_id;
-
-				await job.updateProgress(60);
-
-			// ATTENDANCE LOGIC: Let the attendance endpoint handle all validation
-			try {
-				// Determine action based on last event (simple logic - endpoint will validate)
-				const lastEventQuery = `
-					SELECT action
-					FROM attendance_events
-					WHERE emp_id = $1
-					ORDER BY event_time DESC
-					LIMIT 1;
-				`;
-				const { rows: lastEventRows } = await pool.query(lastEventQuery, [response.emp_id]);
-				const lastEvent = lastEventRows.length ? lastEventRows[0] : null;
-
-				// Simple action determination - endpoint will do full validation
-				const action = (!lastEvent || lastEvent.action === 'OUT') ? 'IN' : 'OUT';
-
-				const attendancePayload = {
-					emp_id: response.emp_id,
-					cam_id: cam_id || null,
-					site_id: site_id || null,
-					action,
-					similarity_score: mlResponse.confidence || null,
-					liveness_passed: mlResponse.liveness?.is_live || null
-				};
-
-				await axios.post(`${BACKEND_URL}/api/attendance`, attendancePayload);
-				console.log(`[WORKER] Attendance recorded: ${response.name} ${action}`);
-			} catch (attendanceErr) {
-				const statusCode = attendanceErr.response?.status;
-				const errorMessage = attendanceErr.response?.data?.message || attendanceErr.message;
-
-				// Handle different error types
-				if (statusCode === 429) {
-					// Cooldown - not an error, just log it
-					console.log(`[WORKER] Attendance cooldown: ${errorMessage}`);
-				} else if (statusCode === 400) {
-					// Validation error - log but don't fail the recognition
-					console.warn(`[WORKER] Attendance validation: ${errorMessage}`);
-				} else {
-					// Server error (500) or other - FAIL the job
-					console.error(`[WORKER] Attendance error: ${errorMessage}`);
-					throw new Error(`Failed to record attendance: ${errorMessage}`);
-				}
-			}
-			} catch (lookupErr) {
-				console.error(`[WORKER] Employee lookup error: ${lookupErr.message}`);
-				throw new Error(`Failed to lookup employee: ${lookupErr.message}`);
-			}
 
 			await job.updateProgress(100);
 			return response;

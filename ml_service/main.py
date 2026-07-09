@@ -15,6 +15,7 @@ import base64
 import time
 import traceback
 from pathlib import Path
+import os
 
 from inference.face_processor import FaceProcessor
 from inference.recognition_pipeline import RecognitionPipeline
@@ -28,6 +29,38 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Decision Engine Configuration
+ENABLE_TRACK_AGGREGATION = os.getenv("ENABLE_TRACK_AGGREGATION", "True").lower() in ("true", "1")
+ENABLE_TEMPORAL_VOTING = os.getenv("ENABLE_TEMPORAL_VOTING", "True").lower() in ("true", "1")
+TEMPORAL_VOTING_WINDOW = int(os.getenv("TEMPORAL_VOTING_WINDOW", "5"))
+TEMPORAL_VOTING_THRESHOLD = int(os.getenv("TEMPORAL_VOTING_THRESHOLD", "3"))
+UNKNOWN_SUPPRESSION_SECONDS = float(os.getenv("UNKNOWN_SUPPRESSION_SECONDS", "1.5"))
+RECOGNITION_THRESHOLD = float(os.getenv("FACE_RECOGNITION_THRESHOLD", "0.5"))
+
+# Rolling latency stats
+LATENCY_STATS = {
+    "detection": [],
+    "embedding": [],
+    "search": [],
+    "voting": [],
+    "total": []
+}
+
+def record_latency(name: str, value_ms: float):
+    stats = LATENCY_STATS.get(name)
+    if stats is not None:
+        stats.append(value_ms)
+        if len(stats) > 500:
+            stats.pop(0)
+        if len(stats) % 50 == 0:  # Log summary every 50 frames
+            arr = np.array(stats)
+            logger.info(
+                f"[LATENCY STATS - {name.upper()}] "
+                f"Avg: {np.mean(arr):.1f}ms | "
+                f"P95: {np.percentile(arr, 95):.1f}ms | "
+                f"Max: {np.max(arr):.1f}ms (over last {len(arr)} frames)"
+            )
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -78,9 +111,11 @@ async def startup_event():
     logger.info("="*60)
     
     try:
+        force_gpu = os.getenv("FORCE_GPU", "true").strip().lower() in ("1", "true", "yes", "on")
+
         # Initialize Face Processor (InsightFace)
-        logger.info("Initializing Face Processor with GPU optimization...")
-        face_processor = FaceProcessor(force_gpu=True)  # Force GPU for production
+        logger.info(f"Initializing Face Processor (FORCE_GPU={force_gpu})...")
+        face_processor = FaceProcessor(force_gpu=force_gpu)
         
         if face_processor.is_gpu_available():
             logger.info("GPU ENABLED - Recognition and Enrollment will run on GPU")
@@ -89,7 +124,7 @@ async def startup_event():
         
         # Initialize Anti-Spoofing Predictor
         logger.info("Initializing Anti-Spoofing Predictor...")
-        antispoof_predictor = init_predictor(use_gpu=True)
+        antispoof_predictor = init_predictor(use_gpu=face_processor.is_gpu_available())
         logger.info("Anti-Spoofing model loaded (MiniFASNet ONNX)")
         
         # Initialize Embedding Manager
@@ -98,7 +133,7 @@ async def startup_event():
 
         # Initialize Recognition Pipeline (tracking + gating + batching)
         logger.info("Initializing Recognition Pipeline...")
-        recognition_pipeline = RecognitionPipeline()
+        recognition_pipeline = RecognitionPipeline(max_stale_seconds=5.0)
         
         # Initialize Milvus Client
         logger.info("Connecting to Milvus Vector Database...")
@@ -148,6 +183,7 @@ async def root():
 @app.post("/enroll", response_model=EnrollmentResponse)
 async def enroll_person(
     name: str = Form(...),
+    emp_id: Optional[str] = Form(None),
     files: List[UploadFile] = File(...)
 ):
     """
@@ -155,6 +191,7 @@ async def enroll_person(
     
     Args:
         name: Person's name
+        emp_id: Optional employee ID (if not provided, a unique legacy ID is generated)
         files: List of image files (minimum 3, recommended 5)
         
     Returns:
@@ -194,10 +231,13 @@ async def enroll_person(
         # Compute centroid embedding
         centroid = embedding_manager.compute_centroid(embeddings)
         
-        # Store in Milvus
-        person_id = milvus_client.insert_face(centroid)
+        # Resolve emp_id for version 2 schema compatibility
+        resolved_emp_id = emp_id if emp_id else f"legacy_{int(time.time())}"
         
-        success_msg = f"Successfully enrolled {name} with {len(embeddings)} images"
+        # Store in Milvus
+        person_id = milvus_client.insert_face(emp_id=resolved_emp_id, embedding=centroid, template_version=1)
+        
+        success_msg = f"Successfully enrolled {name} (emp_id={resolved_emp_id}) with {len(embeddings)} images"
         logger.info(success_msg)
         
         return EnrollmentResponse(
@@ -210,6 +250,77 @@ async def enroll_person(
         raise
     except Exception as e:
         logger.error(f"Enrollment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/re-enroll", response_model=EnrollmentResponse)
+async def re_enroll_person(
+    emp_id: str = Form(...),
+    files: List[UploadFile] = File(...)
+):
+    """
+    Re-enroll an employee using CCTV crops by generating a versioned centroid template
+    
+    Args:
+        emp_id: Employee ID
+        files: List of CCTV face crop files (minimum 3)
+        
+    Returns:
+        Re-enrollment result
+    """
+    try:
+        if len(files) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail="At least 3 images required for re-enrollment"
+            )
+        
+        embeddings = []
+        
+        for file in files:
+            # Read and decode image
+            contents = await file.read()
+            nparr = np.frombuffer(contents, np.uint8)
+            image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                continue
+
+            # Preprocess + embed (lenient recognition profile for CCTV crops!)
+            result = face_processor.process_for_recognition(image)
+            if not result.get("success"):
+                continue
+            
+            embeddings.append(result["embedding"])
+        
+        if len(embeddings) < 3:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only {len(embeddings)} valid faces found after recognition quality checks. Need at least 3."
+            )
+        
+        # Compute centroid embedding
+        centroid = embedding_manager.compute_centroid(embeddings)
+        
+        # Query highest template version currently in Milvus for this emp_id
+        current_max_ver = milvus_client.get_max_template_version(emp_id)
+        new_ver = current_max_ver + 1
+        
+        # Store in Milvus (schema v2 keeps existing versions intact, templates are versioned)
+        person_id = milvus_client.insert_face(emp_id=emp_id, embedding=centroid, template_version=new_ver)
+        
+        success_msg = f"Successfully re-enrolled employee {emp_id} with {len(embeddings)} crops. New template version: v{new_ver}"
+        logger.info(success_msg)
+        
+        return EnrollmentResponse(
+            success=True,
+            message=success_msg,
+            person_id=person_id
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Re-enrollment error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # WEBSOCKET FOR STREAMING
@@ -292,159 +403,55 @@ async def websocket_recognize(websocket: WebSocket):
                         })
                         continue
                     
-                    # Detect faces (GPU)
-                    faces = face_processor.detect_faces(image)
-                    
-                    if not faces:
-                        await websocket.send_json({
-                            "type": "result",
-                            "name": None,
-                            "confidence": 0.0,
-                            "is_recognized": False,
-                            "message": "No face detected"
-                        })
-                        continue
-
-                    # Preprocess faces (CPU) and keep only usable ones
-                    usable_faces = []
-                    usable_bboxes = []
-
-                    for f in faces:
-                        preprocess_result = face_processor.preprocess_face(image, f, mode="recognize")
-                        if preprocess_result.usable:
-                            usable_faces.append(f)
-                            usable_bboxes.append((f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]))
-
-                    if not usable_faces:
-                        await websocket.send_json({
-                            "type": "result",
-                            "name": None,
-                            "confidence": 0.0,
-                            "is_recognized": False,
-                            "message": "No usable face after preprocessing"
-                        })
-                        continue
-
-                    # Use largest usable face (track index to avoid equality checks)
-                    largest_index = None
-                    largest_area = -1.0
-                    for i, f in enumerate(usable_faces):
-                        area = (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1])
-                        if area > largest_area:
-                            largest_area = area
-                            largest_index = i
-                    face = usable_faces[largest_index]
-                    
-                    # ANTI-SPOOFING CHECK (WebSocket)
-                    # Initialize antispoof_result before try block to avoid scope issues
-                    antispoof_result = None
-                    try:
-                        x1, y1, x2, y2 = map(int, face.bbox)
-                        
-                        # Validate bbox coordinates
-                        img_h, img_w = image.shape[:2]
-                        if x1 >= x2 or y1 >= y2:
-                            logger.warning(f"Invalid bbox in WebSocket - x1={x1}, y1={y1}, x2={x2}, y2={y2}")
-                            raise ValueError(f"Invalid bbox dimensions")
-                        
-                        # Clip bbox to image boundaries
-                        x1_clipped = max(0, min(x1, img_w - 1))
-                        y1_clipped = max(0, min(y1, img_h - 1))
-                        x2_clipped = max(x1_clipped + 1, min(x2, img_w))
-                        y2_clipped = max(y1_clipped + 1, min(y2, img_h))
-                        
-                        # Check minimum face size
-                        crop_width = x2_clipped - x1_clipped
-                        crop_height = y2_clipped - y1_clipped
-                        if crop_width < 16 or crop_height < 16:
-                            logger.warning(f"Face crop too small in WebSocket ({crop_width}x{crop_height}px)")
-                            raise ValueError(f"Face too small for anti-spoof check")
-                        
-                        face_crop = image[y1_clipped:y2_clipped, x1_clipped:x2_clipped]
-                        antispoof_result = antispoof_predictor.predict(face_crop)
-                        
-                        if not antispoof_result.is_live:
-                            await websocket.send_json({
-                                "type": "result",
-                                "name": None,
-                                "confidence": 0.0,
-                                "is_recognized": False,
-                                "message": "Spoof detected",
-                                "liveness": {
-                                    "status": "spoof",
-                                    "is_live": False,
-                                    "real_score": float(antispoof_result.real_score),
-                                    "fake_score": float(antispoof_result.fake_score)
-                                }
-                            })
-                            continue
-                    except Exception as e:
-                        logger.error(f"Anti-spoof check failed in WebSocket: {type(e).__name__}: {e}")
-                        antispoof_result = None
-                    
-                    # Tracking + gating + batch search
-                    now_ts = time.time()
+                    # Start pipeline latency tracking
+                    frame_start_time = time.time()
+                    now_ts = frame_start_time
                     session_key = f"ws:{id(websocket)}"
 
-                    track_ids = recognition_pipeline.update_tracks(session_key, usable_bboxes, now=now_ts)
+                    # Resolve/Increment Frame ID
+                    frame_id = message.get("frame_id")
+                    if frame_id is None:
+                        if not hasattr(websocket, "_frame_counter"):
+                            websocket._frame_counter = 0
+                        websocket._frame_counter += 1
+                        frame_id = websocket._frame_counter
 
-                    embeddings_to_search = []
-                    face_indices = []
-
-                    for idx, f in enumerate(usable_faces):
-                        track = recognition_pipeline.get_track(session_key, track_ids[idx])
-                        if recognition_pipeline.should_embed(track, usable_bboxes[idx], now_ts):
-                            embeddings_to_search.append(face_processor.get_embedding(f))
-                            face_indices.append(idx)
-
-                    results = []
-                    if len(embeddings_to_search) > 0:
-                        results = milvus_client.search_faces(embeddings_to_search)
-                        for r_idx, face_idx in enumerate(face_indices):
-                            recognition_pipeline.update_track_result(
-                                session_key,
-                                track_ids[face_idx],
-                                usable_bboxes[face_idx],
-                                results[r_idx] if r_idx < len(results) else None,
-                                now_ts
-                            )
-
-                    # largest_index already computed above
-                    track_for_largest = recognition_pipeline.get_track(session_key, track_ids[largest_index])
-                    result = None
-                    if track_for_largest and track_for_largest.last_result:
-                        result = track_for_largest.last_result
-                    elif len(embeddings_to_search) > 0 and largest_index in face_indices:
-                        result = results[face_indices.index(largest_index)] if len(results) > 0 else None
+                    # Detect faces (GPU/CPU)
+                    det_start = time.time()
+                    faces = face_processor.detect_faces(image)
+                    det_time = (time.time() - det_start) * 1000
+                    record_latency("detection", det_time)
                     
-                    if result is not None and result.get('confidence', 0) >= 0.5:
-                        await websocket.send_json({
-                            "type": "result",
-                            "person_id": result.get('person_id'),  # Send as string to preserve BIGINT precision
-                            "confidence": float(result.get('confidence', 0)),
-                            "is_recognized": True,
-                            "message": "Face recognized",
-                            "liveness": {
-                                "status": "live",
-                                "is_live": True,
-                                "real_score": float(antispoof_result.real_score) if antispoof_result else 0.0,
-                                "fake_score": float(antispoof_result.fake_score) if antispoof_result else 0.0
-                            }
-                        })
-                    else:
-                        await websocket.send_json({
-                            "type": "result",
-                            "person_id": None,
-                            "confidence": float(result.get('confidence', 0)) if result is not None else 0.0,
-                            "is_recognized": False,
-                            "message": "Unknown face",
-                            "liveness": {
-                                "status": "live",
-                                "is_live": True,
-                                "real_score": float(antispoof_result.real_score) if antispoof_result else 0.0,
-                                "fake_score": float(antispoof_result.fake_score) if antispoof_result else 0.0
-                            }
-                        })
+                    response_faces = []
+
+                    if faces:
+                        # Extract raw bboxes for all detected faces
+                        all_bboxes = [(f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]) for f in faces]
+                        
+                        # Update track IDs using SimpleTracker
+                        track_ids = recognition_pipeline.update_tracks(session_key, all_bboxes, now=now_ts)
+
+                        for idx, face in enumerate(faces):
+                            track_id = track_ids[idx]
+                            x1, y1, x2, y2 = map(int, face.bbox)
+                            
+                            response_faces.append({
+                                "track_id": track_id,
+                                "bbox": [x1, y1, x2, y2],
+                                "label": f"Track-{track_id}",
+                                "confidence": float(face.det_score)
+                            })
+
+                    # Total pipeline latency
+                    total_time = (time.time() - frame_start_time) * 1000
+                    record_latency("total", total_time)
+
+                    # Return the list of all faces and bounding boxes
+                    await websocket.send_json({
+                        "type": "result",
+                        "frame_id": frame_id,
+                        "faces": response_faces
+                    })
                 
                 except Exception as e:
                     logger.error(f"Recognition error in WebSocket: {str(e)}")

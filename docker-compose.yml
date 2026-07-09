@@ -189,6 +189,61 @@ services:
       - DB_HOST=postgres
       - BACKEND_URL=http://backend:3000
 
+  # FRONTEND - React / Vite user interface
+  frontend:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:3000"
+    env_file:
+      - .env
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 3000"
+    environment:
+      - CHOKIDAR_USEPOLLING=true
+      - VITE_API_BASE_URL=http://localhost:3000
+      - VITE_WS_URL=http://localhost:3000
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  # CAMERA INGESTOR - captures RTSP streams and writes frames to Redis stream
+  camera-ingestor:
+    build: ./camera_ingestor
+    image: arcface/camera-ingestor:latest
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - STREAM_KEY=camera_ingestor:stream
+      - HEARTBEAT_TTL_S=60
+    depends_on:
+      - redis
+    networks:
+      - app-network
+
+  # CAMERA ADAPTER - reads Redis stream and enqueues jobs into BullMQ
+  camera-adapter:
+    image: node:18
+    working_dir: /app
+    volumes:
+      - ./camera_ingestor/node_adapter:/app
+      - camera_adapter_node_modules:/app/node_modules
+    command: sh -c "npm install --no-audit --no-fund && node adapter.js"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - STREAM_KEY=camera_ingestor:stream
+      - STREAM_GROUP=camera_ingestor_group
+      - STREAM_CONSUMER=adapter_consumer_1
+    depends_on:
+      - redis
+      - backend
+    networks:
+      - app-network
+
 # NETWORKS
 networks:
   app-network:
@@ -204,3 +259,5 @@ volumes:
   redis_data:
   backend_node_modules:
   worker_node_modules:
+  camera_adapter_node_modules:
+  frontend_node_modules:

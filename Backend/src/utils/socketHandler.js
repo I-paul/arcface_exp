@@ -5,10 +5,9 @@ const { QueueEvents } = require('bullmq');
 const pool = require('../DB/config');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
-const MIN_RECOGNITION_INTERVAL_MS = 250; // ~4 FPS throttle
 
 /**
- * Socket.IO handler for real-time face recognition and enrollment
+ * Socket.IO handler for real-time face recognition
  * @param {Server} io - Socket.IO server instance
  */
 module.exports = function socketHandler(io) {
@@ -131,97 +130,6 @@ module.exports = function socketHandler(io) {
     });
 
     /**
-     * Face enrollment - capture frame
-     * Collects multiple frames for enrollment
-     */
-    socket.on('enroll-capture', async (data) => {
-      try {
-        const { image, name, frameIndex, totalFrames } = data;
-
-        if (!image || !name) {
-          socket.emit('enrollment-error', { message: 'Image and name are required' });
-          return;
-        }
-
-        // Store frame temporarily in socket session
-        if (!socket.enrollmentData) {
-          socket.enrollmentData = {
-            name: name,
-            frames: []
-          };
-        }
-
-        socket.enrollmentData.frames.push(image);
-
-        // Emit progress
-        socket.emit('enrollment-progress', {
-          captured: socket.enrollmentData.frames.length,
-          total: totalFrames || 5,
-          message: `Captured frame ${frameIndex + 1}`
-        });
-
-      } catch (error) {
-        console.error('[Socket.IO] Enrollment capture error:', error.message);
-        socket.emit('enrollment-error', { message: 'Failed to capture frame' });
-      }
-    });
-
-    /**
-     * Submit enrollment after all frames captured
-     */
-    socket.on('enroll-submit', async (data) => {
-      try {
-        const { name, images } = data; // images is array of base64 encoded images
-
-        if (!name || !images || images.length < 3) {
-          socket.emit('enrollment-error', { 
-            message: 'At least 3 images are required for enrollment' 
-          });
-          return;
-        }
-
-        // Create form data with multiple files
-        const form = new FormData();
-        form.append('name', name);
-
-        images.forEach((image, index) => {
-          const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
-          const buffer = Buffer.from(base64Data, 'base64');
-          form.append('files', buffer, {
-            filename: `capture-${index}.jpg`,
-            contentType: 'image/jpeg'
-          });
-        });
-
-        // Send to ML service
-        const { data: result } = await axios.post(
-          `${ML_SERVICE_URL}/enroll`,
-          form,
-          {
-            headers: form.getHeaders(),
-            timeout: 30000
-          }
-        );
-
-        // Clear enrollment data
-        socket.enrollmentData = null;
-
-        // Emit success
-        socket.emit('enrollment-success', {
-          success: true,
-          message: result.message || `Successfully enrolled ${name}`,
-          person_id: result.person_id || null
-        });
-
-      } catch (error) {
-        console.error('[Socket.IO] Enrollment submit error:', error.message);
-        const errorMessage = error.response?.data?.detail || 'Enrollment failed';
-        socket.emit('enrollment-error', { message: errorMessage });
-        socket.enrollmentData = null;
-      }
-    });
-
-    /**
      * Health check for ML service
      */
     socket.on('check-ml-service', async () => {
@@ -246,10 +154,6 @@ module.exports = function socketHandler(io) {
      */
     socket.on('disconnect', () => {
       console.log(`[Socket.IO] Client disconnected: ${socket.id}`);
-      // Clean up enrollment data if any
-      if (socket.enrollmentData) {
-        socket.enrollmentData = null;
-      }
     });
   });
 

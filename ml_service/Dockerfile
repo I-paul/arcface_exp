@@ -19,7 +19,9 @@ RUN apt-get update && \
 
 # Install Python dependencies
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt && \
+    (pip3 uninstall -y onnxruntime || true) && \
+    pip3 install --no-cache-dir onnxruntime-gpu==1.17.1
 
 # Copy application code
 COPY . .

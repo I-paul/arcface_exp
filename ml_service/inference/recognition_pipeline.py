@@ -4,8 +4,11 @@ Recognition pipeline with tracking, gating, and micro-batch search.
 from typing import List, Tuple, Optional
 import time
 import numpy as np
+import logging
 
 from .tracker import SimpleTracker
+
+logger = logging.getLogger(__name__)
 
 
 class RecognitionPipeline:
@@ -90,6 +93,12 @@ class RecognitionPipeline:
         track.last_result = result
         conf = result.get("confidence") if result else None
         track.last_confidence = self._to_scalar(conf)
+        
+        # Append to recognition history
+        history_entry = result if result else {"person_id": None, "confidence": 0.0}
+        track.recognition_history.append(history_entry)
+        if len(track.recognition_history) > 20:
+            track.recognition_history = track.recognition_history[-20:]
 
     def get_cached_result(self, session_id: str, track_id: int) -> Optional[dict]:
         tracker = self._get_session(session_id)
@@ -97,3 +106,61 @@ class RecognitionPipeline:
         if not track:
             return None
         return track.last_result
+
+    def aggregate_embedding(self, track) -> Optional[np.ndarray]:
+        if not track.embeddings:
+            return None
+        embeddings_array = np.vstack(track.embeddings)
+        centroid = np.mean(embeddings_array, axis=0)
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        return centroid
+
+    def perform_voting(self, track, window_size: int = 5, threshold: int = 3) -> Tuple[Optional[str], float, bool]:
+        if not track.recognition_history:
+            return None, 0.0, False
+
+        # Get the last window_size recognition attempts
+        history = track.recognition_history[-window_size:]
+        
+        # Count occurrences of each non-None person_id
+        from collections import Counter
+        counts = Counter(item.get("person_id") for item in history if item.get("person_id") is not None)
+        
+        if not counts:
+            track.track_confidence = 0.0
+            return None, 0.0, False
+            
+        majority_id, count = counts.most_common(1)[0]
+        
+        if count >= threshold:
+            # Average similarity score for frames matching majority_id
+            matching_scores = [
+                item.get("confidence", 0.0) 
+                for item in history 
+                if item.get("person_id") == majority_id
+            ]
+            avg_similarity = float(np.mean(matching_scores)) if matching_scores else 0.0
+            
+            # Compute confidence score
+            vote_ratio = count / len(history)
+            track_len = len(track.embeddings)
+            track_length_factor = min(1.0, track_len / 5.0)
+            
+            score = vote_ratio * avg_similarity * track_length_factor
+            clamped_confidence = float(max(0.0, min(1.0, score)))
+            
+            track.track_confidence = clamped_confidence
+            
+            # Log vote stats for debugging
+            logger.info(
+                f"[VOTING] emp_id={majority_id}, vote_ratio={vote_ratio:.2f}, "
+                f"avg_similarity={avg_similarity:.2f}, track_len={track_len}, "
+                f"track_confidence={clamped_confidence:.3f}"
+            )
+            
+            return majority_id, clamped_confidence, True
+            
+        track.track_confidence = 0.0
+        return None, 0.0, False

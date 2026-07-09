@@ -64,10 +64,17 @@ class AntiSpoofPredictor:
     
     def _init_session(self):
         """Initialize ONNX Runtime session"""
+        available = ort.get_available_providers()
+
         # Set execution providers
         providers = []
-        if self.use_gpu:
+        if self.use_gpu and 'CUDAExecutionProvider' in available:
             providers.append('CUDAExecutionProvider')
+        elif self.use_gpu:
+            logger.warning(
+                "CUDAExecutionProvider requested for anti-spoofing but not available. "
+                f"Available providers: {available}. Falling back to CPUExecutionProvider."
+            )
         providers.append('CPUExecutionProvider')
         
         # Session options

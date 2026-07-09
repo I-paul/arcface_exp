@@ -1,6 +1,7 @@
 const express = require('express');
 const {
 	enrollEmployee,
+	reEnrollEmployee,
 	recognizeFace,
 	getJobStatus,
 	getAllEmployees,
@@ -47,6 +48,7 @@ router.delete('/employees/:emp_id', deleteEmployee);
 
 // ====== FACE RECOGNITION & ENROLLMENT ======
 router.post('/enroll', uploadDisk.array('files', 5), enrollEmployee);
+router.post('/re-enroll', uploadDisk.array('files', 20), reEnrollEmployee);
 router.post('/recognize', uploadMemory.single('file'), recognizeFace);
 
 // ====== JOB STATUS ======

@@ -1,0 +1,12 @@
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.github
+.gitignore
+.env
+data/
+cctv_crops/
+crops/
