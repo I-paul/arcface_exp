@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
 
 /**
- * DirectWebcamRecognition Component (Local Testing with IP Camera Support & HTTP Fallback)
+ * DirectWebcamRecognition Component (Local Testing with IP Camera Support)
  * 
  * Accesses browser webcam stream or Network IP Camera feed.
  * Periodically captures frames and emits them over 'recognize-face' Socket.IO event.
- * Also provides an HTTP Fallback Test button, posting the frame as 'file' to /api/recognize.
  * Overlays bounding boxes, employee name, and scores on canvas.
+ * 
+ * Layout:
+ * - Streamlined viewport height and side-panel results to fit together on screen.
+ * - Defaults to Network IP Camera feed.
  */
 export default function DirectWebcamRecognition({ socket }) {
   const videoRef = useRef(null);
@@ -23,9 +25,9 @@ export default function DirectWebcamRecognition({ socket }) {
   const [faces, setFaces] = useState([]);
   const [errorMsg, setErrorMsg] = useState(null);
 
-  // Source configuration states
-  const [sourceType, setSourceType] = useState('webcam'); // 'webcam' or 'ipcamera'
-  const [ipAddress, setIpAddress] = useState('192.168.1.50');
+  // Source configuration states - default set to network IP camera ('ipcamera')
+  const [sourceType, setSourceType] = useState('ipcamera');
+  const [ipAddress, setIpAddress] = useState('10.1.31.216');
   const [ipPort, setIpPort] = useState('8080');
   const [ipPath, setIpPath] = useState('/video');
 
@@ -91,19 +93,17 @@ export default function DirectWebcamRecognition({ socket }) {
     const onRecognitionResult = (payload) => {
       if (!payload) return;
 
-      const facesList = [];
+      const rawFaces = [];
       if (payload.faces && Array.isArray(payload.faces)) {
         payload.faces.forEach((f) => {
-          if (f.bbox) {
-            facesList.push({
-              name: f.name || 'Unknown',
-              score: f.score || f.confidence || 0.9,
-              bbox: f.bbox
-            });
-          }
+          rawFaces.push({
+            name: f.name || 'Unknown',
+            score: f.score || f.confidence || 0.9,
+            bbox: f.bbox
+          });
         });
       } else if (payload.bbox) {
-        facesList.push({
+        rawFaces.push({
           name: payload.name || 'Unknown',
           score: payload.confidence || payload.score || 0.9,
           bbox: payload.bbox
@@ -111,14 +111,23 @@ export default function DirectWebcamRecognition({ socket }) {
       } else if (payload.detected) {
         const nameVal = payload.name || 'Unknown';
         const scoreVal = payload.confidence || 0.9;
-        facesList.push({
+        rawFaces.push({
           name: nameVal,
           score: scoreVal,
           bbox: [180, 100, 320, 260]
         });
       }
 
-      setFaces(facesList);
+      // Filter: Keep all recognized entries, but only ONE unknown entry
+      const recognized = rawFaces.filter(f => f.name.toLowerCase() !== 'unknown' && f.name.toLowerCase() !== 'unrecognized');
+      const unknowns = rawFaces.filter(f => f.name.toLowerCase() === 'unknown' || f.name.toLowerCase() === 'unrecognized');
+      
+      const filtered = [...recognized];
+      if (unknowns.length > 0) {
+        filtered.push(unknowns[0]);
+      }
+
+      setFaces(filtered);
       setErrorMsg(null);
     };
 
@@ -184,41 +193,7 @@ export default function DirectWebcamRecognition({ socket }) {
               ctx.drawImage(drawSource, 0, 0, canvas.width, canvas.height);
             }
 
-            // Draw bounding boxes on top
-            faces.forEach((face) => {
-              if (!face.bbox || face.bbox.length !== 4) return;
-              
-              const [x1, y1, x2, y2] = face.bbox;
-              const w = x2 - x1;
-              const h = y2 - y1;
-
-              const isUnknown = !face.name || face.name.toLowerCase() === 'unknown' || face.name.toLowerCase() === 'unrecognized';
-              const color = isUnknown ? '#F43F5E' : '#10B981';
-              const scorePct = face.score <= 1.0 ? Math.round(face.score * 100) : Math.round(face.score);
-
-              // Draw Corners
-              ctx.strokeStyle = color;
-              ctx.lineWidth = 3;
-              const len = Math.min(15, w / 4);
-
-              // TL
-              ctx.beginPath(); ctx.moveTo(x1 + len, y1); ctx.lineTo(x1, y1); ctx.lineTo(x1, y1 + len); ctx.stroke();
-              // TR
-              ctx.beginPath(); ctx.moveTo(x2 - len, y1); ctx.lineTo(x2, y1); ctx.lineTo(x2, y1 + len); ctx.stroke();
-              // BL
-              ctx.beginPath(); ctx.moveTo(x1 + len, y2); ctx.lineTo(x1, y2); ctx.lineTo(x1, y2 - len); ctx.stroke();
-              // BR
-              ctx.beginPath(); ctx.moveTo(x2 - len, y2); ctx.lineTo(x2, y2); ctx.lineTo(x2, y2 - len); ctx.stroke();
-
-              // Banner
-              ctx.fillStyle = color;
-              ctx.fillRect(x1 - 1, y1 - 20, w + 2, 20);
-
-              // Text
-              ctx.fillStyle = '#000000';
-              ctx.font = 'bold 10px sans-serif';
-              ctx.fillText(`${face.name.toUpperCase()} (${scorePct}%)`, x1 + 6, y1 - 7);
-            });
+            // Bounding box overlays disabled per request. Direct video stream is displayed.
           } catch (drawErr) {
             // Draw error notice if canvas tainted by CORS
             ctx.fillStyle = '#F43F5E';
@@ -290,79 +265,6 @@ export default function DirectWebcamRecognition({ socket }) {
       if (sendIntervalRef.current) clearInterval(sendIntervalRef.current);
     };
   }, [socket, isConnected, pipelineActive, cameraActive, sourceType, ipAddress]);
-
-  // --- HTTP Fallback Evaluation to /api/recognize ---
-  const handleHTTPEvaluate = () => {
-    setErrorMsg(null);
-    const video = videoRef.current;
-    const ipImg = ipImageRef.current;
-    
-    let captureSource = sourceType === 'webcam' ? video : ipImg;
-    if (!captureSource) {
-      setErrorMsg("Active camera stream source not found.");
-      return;
-    }
-
-    const tempCanvas = document.createElement('canvas');
-    tempCanvas.width = 640;
-    tempCanvas.height = 480;
-    const tempCtx = tempCanvas.getContext('2d');
-    if (!tempCtx) return;
-
-    try {
-      if (sourceType === 'webcam') {
-        tempCtx.translate(tempCanvas.width, 0);
-        tempCtx.scale(-1, 1);
-        tempCtx.drawImage(captureSource, 0, 0, tempCanvas.width, tempCanvas.height);
-      } else {
-        tempCtx.drawImage(captureSource, 0, 0, tempCanvas.width, tempCanvas.height);
-      }
-    } catch (e) {
-      console.error(e);
-      setErrorMsg("CORS Block: Cannot capture frame for HTTP evaluation. Check IP camera cross-origin settings.");
-      return;
-    }
-
-    tempCanvas.toBlob(async (blob) => {
-      if (!blob) {
-        setErrorMsg("Failed to generate image snapshot Blob.");
-        return;
-      }
-
-      const formData = new FormData();
-      // Requirement: Appending file to FormData under the key exactly as 'file' 
-      // matching the Backend's uploadMemory.single('file') configuration:
-      formData.append('file', blob, `${sourceType}-test-snapshot.jpg`);
-
-      try {
-        const response = await axios.post('/api/recognize', formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-
-        const data = response.data;
-        if (data.detected) {
-          const scoreVal = data.confidence || 0.9;
-          setFaces([{
-            name: data.name || 'Unknown',
-            score: scoreVal,
-            bbox: data.bbox || [180, 100, 320, 260] // fallback center box
-          }]);
-        } else {
-          setFaces([{
-            name: 'Unknown',
-            score: 0,
-            bbox: [180, 100, 320, 260]
-          }]);
-        }
-      } catch (err) {
-        console.error('HTTP evaluation failed:', err);
-        const errMsg = err.response?.data?.message || err.message || 'HTTP endpoint evaluation failed.';
-        setErrorMsg(errMsg);
-      }
-    }, 'image/jpeg', 0.85);
-  };
 
   return (
     <div className="w-full bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-6">
@@ -454,82 +356,134 @@ export default function DirectWebcamRecognition({ socket }) {
         </div>
       )}
 
-      {/* VIEWPORT AREA */}
-      <div className="relative aspect-video w-full bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center">
+      {/* BALANCED SIDE-BY-SIDE VIEWPORT LAYOUT */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-stretch">
         
-        {/* Webcam stream */}
-        {sourceType === 'webcam' && (
-          cameraActive ? (
-            <video 
-              ref={videoRef}
-              className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-              muted
-              playsInline
+        {/* Stream / Camera Viewport (reduced height/size to prevent layout push) */}
+        <div className="bg-slate-950 rounded-xl overflow-hidden border border-slate-800 relative aspect-video flex items-center justify-center max-h-[300px]">
+          
+          {/* Webcam stream */}
+          {sourceType === 'webcam' && (
+            cameraActive ? (
+              <video 
+                ref={videoRef}
+                className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+                muted
+                playsInline
+              />
+            ) : (
+              <div className="text-xs text-slate-500 z-10">Webcam inactive. Switch toggle to start stream.</div>
+            )
+          )}
+
+          {/* IP Camera stream */}
+          {sourceType === 'ipcamera' && (
+            <img
+              ref={ipImageRef}
+              src={ipCameraUrl}
+              alt="IP Camera Feed"
+              className="hidden" // rendered to canvas
+              crossOrigin="anonymous"
+              onError={() => {
+                console.error("IP Camera feed load error");
+              }}
             />
-          ) : (
-            <div className="text-xs text-slate-500 z-10">Webcam inactive. Switch toggle to start stream.</div>
-          )
-        )}
+          )}
 
-        {/* IP Camera stream */}
-        {sourceType === 'ipcamera' && (
-          <img
-            ref={ipImageRef}
-            src={ipCameraUrl}
-            alt="IP Camera Feed"
-            className="hidden" // rendered to canvas
-            crossOrigin="anonymous"
-            onError={() => {
-              console.error("IP Camera feed load error");
-            }}
+          {/* Display Canvas */}
+          <canvas 
+            ref={canvasRef} 
+            className="absolute inset-0 w-full h-full object-cover z-10"
           />
-        )}
 
-        {/* Display Canvas */}
-        <canvas 
-          ref={canvasRef} 
-          className="absolute inset-0 w-full h-full object-cover z-10"
-        />
+          {/* Laser scanner overlay */}
+          {isConnected && pipelineActive && (
+            <div className="absolute left-0 right-0 h-0.5 bg-cyan-400/80 shadow-[0_0_8px_rgba(34,211,238,0.8)] pointer-events-none z-15 animate-[scan-line_4s_infinite_linear]"></div>
+          )}
 
-        {/* Laser scanner overlay */}
-        {isConnected && pipelineActive && (
-          <div className="absolute left-0 right-0 h-0.5 bg-cyan-400/80 shadow-[0_0_8px_rgba(34,211,238,0.8)] pointer-events-none z-15 animate-[scan-line_4s_infinite_linear]"></div>
-        )}
+          {/* Offline notice */}
+          {!isConnected && (
+            <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center text-center p-6 z-20">
+              <p className="text-xs font-semibold text-slate-200">Offline: Awaiting Socket Connection...</p>
+            </div>
+          )}
 
-        {/* Offline notice */}
-        {!isConnected && (
-          <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-sm flex flex-col items-center justify-center text-center p-6 z-20">
-            <p className="text-xs font-semibold text-slate-200">Offline: Awaiting Socket Connection...</p>
-          </div>
-        )}
-
-        {/* HUD overlay */}
-        {isConnected && (
-          <div className="absolute inset-0 p-4 flex flex-col justify-between pointer-events-none text-white font-mono text-[9px] z-10">
-            <div className="flex justify-between items-start">
-              <div className="bg-slate-900/85 backdrop-blur px-2 py-1 rounded border border-slate-800 text-cyan-400">
-                PIPELINE STATUS: {pipelineActive ? 'EMITTING' : 'IDLE'}
+          {/* HUD overlay */}
+          {isConnected && (
+            <div className="absolute inset-0 p-4 flex flex-col justify-between pointer-events-none text-white font-mono text-[9px] z-10">
+              <div className="flex justify-between items-start">
+                <div className="bg-slate-900/85 backdrop-blur px-2 py-1 rounded border border-slate-800 text-cyan-400">
+                  PIPELINE: {pipelineActive ? 'RUNNING' : 'IDLE'}
+                </div>
               </div>
-              <div className="bg-slate-900/85 backdrop-blur px-2 py-1 rounded border border-slate-800 text-slate-400">
-                SOURCE: {sourceType === 'webcam' ? 'USB_WEBCAM' : 'IP_CAMERA'}
+              
+              <div className="flex justify-between items-end">
+                <div className="bg-slate-900/85 backdrop-blur px-2 py-1 rounded border border-slate-800 text-slate-400">
+                  GATEWAY: {sourceType === 'webcam' ? 'Camera-LocalWebcam' : `IP-Cam-${ipAddress}`}
+                </div>
               </div>
             </div>
-            
-            <div className="flex justify-between items-end">
-              <div className="bg-slate-900/85 backdrop-blur px-2 py-1 rounded border border-slate-800 text-slate-400">
-                GATEWAY: {sourceType === 'webcam' ? 'Camera-LocalWebcam' : `IP-Cam-${ipAddress}`}
-              </div>
-              <div className="bg-slate-900/85 backdrop-blur px-2 py-1 rounded border border-slate-800 text-emerald-400 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span>FACES FOUND: {faces.length}</span>
-              </div>
-            </div>
+          )}
+        </div>
+
+        {/* Recognition Results Side-Panel (aligned directly side-by-side) */}
+        <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex flex-col justify-between min-h-[220px] max-h-[300px]">
+          <div>
+            <h3 className="text-xs font-bold text-slate-350 uppercase tracking-wider">Evaluation Result HUD</h3>
+            <p className="text-[9px] text-slate-500 mt-0.5">Real-time socket pipeline verification feed</p>
           </div>
-        )}
+
+          <div className="flex-1 flex flex-col justify-start items-center py-4 overflow-y-auto space-y-4 max-h-[190px] w-full">
+            {faces.length === 0 ? (
+              <div className="text-center text-slate-600 text-xs">
+                <div className="w-10 h-10 rounded-full border border-dashed border-slate-800 flex items-center justify-center mb-2 mx-auto">
+                  <svg className="w-4 h-4 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                </div>
+                <span>Awaiting target lock...</span>
+              </div>
+            ) : (
+              faces.map((face, index) => {
+                const isUnknown = !face.name || face.name.toLowerCase() === 'unknown';
+                const scorePct = face.score <= 1.0 ? Math.round(face.score * 100) : Math.round(face.score);
+                return (
+                  <div key={index} className="w-full text-center space-y-2.5 animate-[slide-in-bottom_0.2s_ease-out]">
+                    <div className={`inline-block px-3.5 py-1.5 rounded-full border font-bold text-xs ${
+                      isUnknown 
+                        ? 'bg-rose-500/10 border-rose-500/30 text-rose-400' 
+                        : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                    }`}>
+                      {isUnknown ? 'UNIDENTIFIED TARGET' : 'LOCK-ON: IDENTIFIED'}
+                    </div>
+
+                    <div className="text-xl font-extrabold text-slate-100 tracking-wide">
+                      {face.name.toUpperCase()}
+                    </div>
+
+                    {!isUnknown && (
+                      <div className="flex items-center justify-center space-x-1.5 text-xs text-slate-400">
+                        <span>Match Confidence:</span>
+                        <span className="font-mono font-bold text-emerald-400">{scorePct}%</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div className="text-[9px] text-slate-600 font-mono text-center pt-2 border-t border-slate-900 flex justify-between">
+            <span>SOCKET CHANNEL: recognize-face</span>
+            <span>CONNECTED</span>
+          </div>
+        </div>
+
       </div>
 
       {/* CONTROLS SWITCH */}
-      <div className="p-4 bg-slate-950/40 border border-slate-850 rounded-xl flex flex-wrap gap-4 items-center justify-between">
+      <div className="p-4 bg-slate-950/40 border border-slate-850 rounded-xl flex flex-col sm:flex-row gap-4 items-center justify-between">
         <div className="flex items-center space-x-3">
           <button 
             type="button"
@@ -549,24 +503,14 @@ export default function DirectWebcamRecognition({ socket }) {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleHTTPEvaluate}
-            className="px-4 py-2 bg-blue-600/10 border border-blue-500/20 text-blue-400 hover:bg-blue-600/20 text-xs font-bold rounded-xl transition-colors"
+        {sourceType === 'webcam' && (
+          <button 
+            onClick={() => setCameraActive(!cameraActive)}
+            className="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs font-bold rounded-xl text-slate-350 hover:text-white transition-colors"
           >
-            Trigger HTTP Fallback Test
+            {cameraActive ? 'Deactivate Camera' : 'Activate Camera'}
           </button>
-
-          {sourceType === 'webcam' && (
-            <button 
-              onClick={() => setCameraActive(!cameraActive)}
-              className="px-4 py-2 bg-slate-900 border border-slate-800 hover:border-slate-700 text-xs font-bold rounded-xl text-slate-350 hover:text-white transition-colors"
-            >
-              {cameraActive ? 'Deactivate Camera' : 'Activate Camera'}
-            </button>
-          )}
-        </div>
+        )}
       </div>
 
     </div>

@@ -1,10 +1,10 @@
 const axios = require('axios');
-const FormData = require('form-data');
-const faceQueue = require('../queues/face.queue');
+const WebSocket = require('ws');
 const { QueueEvents } = require('bullmq');
 const pool = require('../DB/config');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+const ML_WS_URL = ML_SERVICE_URL.replace(/^http/, 'ws') + '/ws/recognize';
 
 /**
  * Socket.IO handler for real-time face recognition
@@ -44,6 +44,75 @@ module.exports = function socketHandler(io) {
     });
   });
 
+  async function recognizeViaWebSocket(imageBase64, frameId = null) {
+    return new Promise((resolve, reject) => {
+      let responded = false;
+      const ws = new WebSocket(ML_WS_URL, {
+        perMessageDeflate: false,
+      });
+
+      const timeout = setTimeout(() => {
+        if (!responded) {
+          responded = true;
+          ws.terminate();
+          reject(new Error('ML service WebSocket timeout'));
+        }
+      }, 20000);
+
+      ws.on('open', () => {
+        const message = JSON.stringify({
+          type: 'recognize',
+          image: imageBase64,
+          frame_id: frameId,
+        });
+        ws.send(message, (sendErr) => {
+          if (sendErr && !responded) {
+            responded = true;
+            clearTimeout(timeout);
+            ws.terminate();
+            reject(sendErr);
+          }
+        });
+      });
+
+      ws.on('message', (raw) => {
+        if (responded) return;
+        try {
+          const message = JSON.parse(raw.toString());
+          if (message.type === 'result') {
+            responded = true;
+            clearTimeout(timeout);
+            ws.terminate();
+            resolve(message);
+          } else if (message.type === 'error') {
+            responded = true;
+            clearTimeout(timeout);
+            ws.terminate();
+            reject(new Error(message.message || 'ML service error'));
+          }
+        } catch (parseErr) {
+          console.error('[Socket.IO] Failed to parse ML service response:', parseErr.message);
+        }
+      });
+
+      ws.on('error', (error) => {
+        if (!responded) {
+          responded = true;
+          clearTimeout(timeout);
+          reject(new Error(`ML WebSocket error: ${error.message}`));
+        }
+      });
+
+      ws.on('close', (code, reason) => {
+        if (!responded) {
+          responded = true;
+          clearTimeout(timeout);
+          reject(new Error(`ML WebSocket closed unexpectedly: ${code} ${reason}`));
+        }
+      });
+    });
+  }
+
   io.on('connection', (socket) => {
     console.log(`[Socket.IO] Client connected: ${socket.id}`);
 
@@ -71,61 +140,115 @@ module.exports = function socketHandler(io) {
           return;
         }
 
-        // Convert base64 to buffer
-        const base64Data = image.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
+        // Use ML service WebSocket endpoint for direct recognition
+        const mlResponse = await recognizeViaWebSocket(image, data.frame_id);
 
-        // Create form data for FastAPI
-        const form = new FormData();
-        form.append('file', buffer, {
-          filename: 'frame.jpg',
-          contentType: 'image/jpeg'
-        });
-        form.append('session_id', socket.id);
-
-        // Send to ML service
-        const { data: result } = await axios.post(
-          `${ML_SERVICE_URL}/recognize`,
-          form,
-          {
-            headers: form.getHeaders(),
-            timeout: 10000
-          }
-        );
-
-        // Initialize response with basic ML service result
         const response = {
           camera_id,
-          detected: result.is_recognized || false,
-          name: null,
-          confidence: result.confidence || 0,
-          message: result.message || 'Recognition complete'
+          frame_id: mlResponse.frame_id || data.frame_id || null,
+          detected: Array.isArray(mlResponse.faces) ? mlResponse.faces.some((f) => f.detected) : false,
+          faces: Array.isArray(mlResponse.faces) ? mlResponse.faces : [],
+          message: mlResponse.message || 'Recognition complete',
         };
 
-        // If detected, resolve employee name from milvus_id (keep as string)
-        if (response.detected && result.person_id) {
-          try {
-            const milvusId = result.person_id;  // Keep as string - no parseInt!
-            const query = 'SELECT name FROM employees WHERE milvus_id = $1';
-            const { rows } = await pool.query(query, [milvusId]);
-            if (rows.length) {
-              response.name = rows[0].name;
+        // Resolve names for each detected face if possible
+        if (Array.isArray(response.faces)) {
+          await Promise.all(response.faces.map(async (face) => {
+            const personId = face.person_id || face.emp_id || null;
+            if (!personId) {
+              face.name = face.name || 'Unknown';
+              return;
             }
-          } catch (lookupErr) {
-            console.error('[Socket.IO] Lookup error:', lookupErr.message);
-          }
+
+            try {
+              const query = 'SELECT name, emp_id FROM employees WHERE milvus_id::text = $1 OR emp_id = $1 LIMIT 1';
+              const { rows } = await pool.query(query, [String(personId)]);
+              if (rows.length) {
+                const emp = rows[0];
+                face.name = emp.name;
+                face.emp_id = emp.emp_id;
+
+                // Log attendance event automatically for live socket recognition
+                const cooldownQuery = `
+                  SELECT event_time, action
+                  FROM attendance_events
+                  WHERE emp_id = $1
+                  ORDER BY event_time DESC
+                  LIMIT 1;
+                `;
+                const { rows: cooldownRows } = await pool.query(cooldownQuery, [emp.emp_id]);
+
+                let resolvedCamId = null;
+                let resolvedSiteId = 'default-site';
+
+                // Try resolving a camera from DB to satisfy foreign keys
+                const camQuery = 'SELECT cam_id, site_id FROM cameras LIMIT 1';
+                const camRes = await pool.query(camQuery);
+                if (camRes.rows.length) {
+                  resolvedCamId = camRes.rows[0].cam_id;
+                  resolvedSiteId = camRes.rows[0].site_id;
+                }
+
+                let shouldLog = true;
+                let nextAction = 'IN';
+
+                if (cooldownRows.length) {
+                  const lastEvent = cooldownRows[0];
+                  const lastEventTime = new Date(lastEvent.event_time).getTime();
+                  const now = Date.now();
+                  
+                  // 1-minute cooldown is perfect for live interactive webcam/IP-cam recognition testing
+                  const cooldownMs = 60 * 1000;
+                  if (now - lastEventTime < cooldownMs) {
+                    shouldLog = false;
+                  } else {
+                    nextAction = lastEvent.action === 'IN' ? 'OUT' : 'IN';
+                  }
+                }
+
+                if (shouldLog) {
+                  const insertQuery = `
+                    INSERT INTO attendance_events (
+                      id, emp_id, cam_id, site_id, event_time, action, 
+                      similarity_score, liveness_passed, created_at
+                    )
+                    VALUES (
+                      gen_random_uuid(), $1, $2, $3, NOW(), $4, $5, TRUE, NOW()
+                    );
+                  `;
+                  await pool.query(insertQuery, [
+                    emp.emp_id,
+                    resolvedCamId,
+                    resolvedSiteId,
+                    nextAction,
+                    face.score || face.confidence || 0.95
+                  ]);
+                  console.log(`[Socket.IO] Automatically logged attendance event (${nextAction}) for employee ${emp.emp_id}`);
+                }
+
+              } else {
+                face.name = face.name || 'Unknown';
+              }
+            } catch (lookupErr) {
+              console.error('[Socket.IO] Name & Attendance lookup error:', lookupErr.message);
+              face.name = face.name || 'Unknown';
+            }
+          }));
         }
 
-        // Emit result back to client with camera_id
+        // Emit result back to the requesting client and broadcast compatible event for other listeners
         socket.emit('recognition-result', response);
+        io.emit('face-recognition-result', response);
 
       } catch (error) {
         console.error('[Socket.IO] Recognition error:', error.message);
-        const errorMessage = error.response?.data?.detail || 'Recognition failed';
-        socket.emit('recognition-error', { 
+        const errorMessage = error.response?.data?.detail || error.message || 'Recognition failed';
+        const errPayload = {
           message: errorMessage,
           camera_id: data?.camera_id || 'unknown'
-        });
+        };
+        socket.emit('recognition-error', errPayload);
+        io.emit('face-recognition-error', errPayload);
       }
     });
 

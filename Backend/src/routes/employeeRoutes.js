@@ -7,6 +7,7 @@ const {
 	getAllEmployees,
 	getEmployeeById,
 	deleteEmployee,
+	getSystemHealth,
 } = require('../models/employee.model');
 const {
 	getAllCameras,
@@ -51,8 +52,9 @@ router.post('/enroll', uploadDisk.array('files', 5), enrollEmployee);
 router.post('/re-enroll', uploadDisk.array('files', 20), reEnrollEmployee);
 router.post('/recognize', uploadMemory.single('file'), recognizeFace);
 
-// ====== JOB STATUS ======
+// ====== JOB STATUS & HEALTH ======
 router.get('/job/:jobId', getJobStatus);
+router.get('/health', getSystemHealth);
 
 // ====== ATTENDANCE EVENTS ======
 router.post('/attendance', recordAttendanceEvent);

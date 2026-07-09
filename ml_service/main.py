@@ -339,12 +339,17 @@ async def websocket_recognize(websocket: WebSocket):
             try:
                 data = await websocket.receive_text()
                 logger.debug(f"Received message: {data[:100]}...")
+            except WebSocketDisconnect:
+                raise
             except Exception as e:
                 logger.error(f"Failed to receive message: {type(e).__name__}: {e}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Failed to receive message"
-                })
+                try:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Failed to receive message"
+                    })
+                except:
+                    pass
                 continue
             
             # Parse JSON
@@ -434,13 +439,43 @@ async def websocket_recognize(websocket: WebSocket):
                         for idx, face in enumerate(faces):
                             track_id = track_ids[idx]
                             x1, y1, x2, y2 = map(int, face.bbox)
-                            
-                            response_faces.append({
+
+                            preprocess_result = face_processor.preprocess_face(image, face, mode="recognize")
+                            if not preprocess_result.usable:
+                                response_faces.append({
+                                    "track_id": track_id,
+                                    "bbox": [x1, y1, x2, y2],
+                                    "label": f"Track-{track_id}",
+                                    "confidence": float(face.det_score),
+                                    "detected": False,
+                                    "person_id": None,
+                                    "reject_reason": preprocess_result.reject_reason,
+                                })
+                                continue
+
+                            embedding = face_processor.get_embedding(face)
+                            search_result = milvus_client.search_face(embedding, top_k=1)
+
+                            recognized = False
+                            person_id = None
+                            confidence = float(face.det_score)
+                            if search_result and search_result.get("person_id") is not None:
+                                person_id = search_result["person_id"]
+                                confidence = float(search_result.get("confidence", confidence))
+                                recognized = confidence >= RECOGNITION_THRESHOLD
+
+                            face_result = {
                                 "track_id": track_id,
                                 "bbox": [x1, y1, x2, y2],
                                 "label": f"Track-{track_id}",
-                                "confidence": float(face.det_score)
-                            })
+                                "confidence": confidence,
+                                "detected": recognized,
+                                "person_id": person_id if recognized else None,
+                                "template_version": search_result.get("template_version") if search_result else None,
+                            }
+
+                            response_faces.append(face_result)
+                            recognition_pipeline.update_track_result(session_key, track_id, (x1, y1, x2, y2), face_result, now_ts)
 
                     # Total pipeline latency
                     total_time = (time.time() - frame_start_time) * 1000
@@ -453,12 +488,17 @@ async def websocket_recognize(websocket: WebSocket):
                         "faces": response_faces
                     })
                 
+                except WebSocketDisconnect:
+                    raise
                 except Exception as e:
                     logger.error(f"Recognition error in WebSocket: {str(e)}")
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": str(e)
-                    })
+                    try:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": str(e)
+                        })
+                    except:
+                        pass
             
             elif message.get("type") == "ping":
                 await websocket.send_json({"type": "pong"})

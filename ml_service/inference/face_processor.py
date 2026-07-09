@@ -27,11 +27,8 @@ class FaceProcessor:
     # Configuration
     EMBEDDING_DIM = 512
     OCCLUSION_THRESHOLD = 0.6
-    DEFAULT_DET_CONFIGS = [
-        (640, 0.50),
-        (896, 0.45),
-        (1024, 0.40),
-    ]
+    DEFAULT_DET_SIZE = 640
+    DEFAULT_DET_THRESH = 0.35
     
     def __init__(self, force_gpu: bool = True):
         """Initialize InsightFace model with GPU support
@@ -93,20 +90,11 @@ class FaceProcessor:
         )
         
         self.ctx_id = 0 if self.device == "cuda" else -1
-        self.detector_configs = self._load_detector_configs()
-        self.base_det_size, self.base_det_thresh = self.detector_configs[0]
-
-        # Resolution caching, escalation cooldown, and idle reset tracking
-        self.active_det_config = self.detector_configs[0]
-        self.last_escalation_time = 0.0
-        self.escalation_cooldown_seconds = 2.0  # Cooldown between escalation attempts
-        self.last_face_seen_time = 0.0          # Track last time a face was successfully detected
-        self.idle_reset_timeout_seconds = 5.0   # Reset to base resolution if idle for 5s
-        self._prepared_size = None
-        self._prepared_thresh = None
-
-        # Prepare with base detector config.
-        self._prepare_detector(self.base_det_size, self.base_det_thresh)
+        self.app.prepare(
+            ctx_id=self.ctx_id,
+            det_size=(640, 640),
+            det_thresh=0.25
+        )
 
         # Log actual runtime providers to verify GPU execution
         providers_info = self.get_runtime_providers()
@@ -117,42 +105,7 @@ class FaceProcessor:
         
         logger.info(f"FaceProcessor initialized successfully on {self.device.upper()}")
 
-    def _load_detector_configs(self):
-        """Load detector retry configs from env or defaults."""
-        configs = []
 
-        raw_sizes = os.getenv("FACE_DET_SIZES", "")
-        raw_thresholds = os.getenv("FACE_DET_THRESHOLDS", "")
-
-        if raw_sizes and raw_thresholds:
-            try:
-                sizes = [int(x.strip()) for x in raw_sizes.split(",") if x.strip()]
-                thresholds = [float(x.strip()) for x in raw_thresholds.split(",") if x.strip()]
-                if len(sizes) == len(thresholds) and len(sizes) > 0:
-                    configs = list(zip(sizes, thresholds))
-            except Exception:
-                logger.warning("Invalid FACE_DET_SIZES/FACE_DET_THRESHOLDS env format; using defaults")
-
-        if not configs:
-            configs = list(self.DEFAULT_DET_CONFIGS)
-
-        logger.info(f"Face detector retry configs: {configs}")
-        return configs
-
-    def _prepare_detector(self, det_size: int, det_thresh: float) -> None:
-        if self._prepared_size == det_size and self._prepared_thresh == det_thresh:
-            return
-        self.app.prepare(ctx_id=self.ctx_id, det_size=(det_size, det_size), det_thresh=det_thresh)
-        self._prepared_size = det_size
-        self._prepared_thresh = det_thresh
-
-    def _detect_with_config(self, image: np.ndarray, det_size: int, det_thresh: float) -> list:
-        self._prepare_detector(det_size, det_thresh)
-        faces = self.app.get(image)
-        logger.info(
-            f"Detection attempt det_size={det_size}, det_thresh={det_thresh:.2f} -> {len(faces)} face(s)"
-        )
-        return faces
     
     def is_gpu_available(self) -> bool:
         """Check if GPU is available"""
@@ -181,47 +134,14 @@ class FaceProcessor:
     
     def detect_faces(self, image: np.ndarray) -> list:
         """
-        Detect faces in an image with resolution caching and escalation cooldown.
-        
-        Args:
-            image: Input image (BGR format)
-            
-        Returns:
-            List of detected face objects
+        Detect faces using InsightFace.
         """
         try:
-            now = time.time()
-            # Idle Reset: if no faces have been seen for the timeout, reset active resolution to base config.
-            if self.active_det_config != self.detector_configs[0] and (now - self.last_face_seen_time) > self.idle_reset_timeout_seconds:
-                logger.info(f"Idle timeout reached. Resetting active detector resolution to base config {self.detector_configs[0]}")
-                self.active_det_config = self.detector_configs[0]
-
-            # First attempt: use the current active resolution config
-            det_size, det_thresh = self.active_det_config
-            faces = self._detect_with_config(image, det_size, det_thresh)
-            if faces:
-                self.last_face_seen_time = now
-                return faces
-
-            # If no faces are found, only escalate if we are not in cooldown.
-            if (now - self.last_escalation_time) >= self.escalation_cooldown_seconds:
-                self.last_escalation_time = now
-                # Retry other resolutions (skipping the one we already tried)
-                for config in self.detector_configs:
-                    if config == self.active_det_config:
-                        continue
-                    esc_size, esc_thresh = config
-                    faces = self._detect_with_config(image, esc_size, esc_thresh)
-                    if faces:
-                        logger.info(f"Escalation success: caching config {config} as active")
-                        self.active_det_config = config
-                        self.last_face_seen_time = now
-                        return faces
-
-            logger.info("Detected 0 face(s) (escalation bypassed or failed)")
-            return []
+            faces = self.app.get(image)
+            logger.info(f"Detected {len(faces)} face(s)")
+            return faces
         except Exception as e:
-            logger.error(f"Face detection error: {str(e)}")
+            logger.error(f"Face detection error: {e}")
             return []
     
     def select_largest_face(self, faces: list):

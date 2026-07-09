@@ -348,6 +348,56 @@ const deleteEmployee = async (req, res) => {
 	}
 };
 
+/**
+ * System health check (PostgreSQL, Redis, Milvus)
+ */
+const getSystemHealth = async (req, res) => {
+	const health = {
+		status: 'healthy',
+		timestamp: new Date().toISOString(),
+		services: {
+			postgres: { status: 'disconnected', details: null },
+			redis: { status: 'disconnected', details: null },
+			milvus: { status: 'disconnected', details: null }
+		}
+	};
+
+	// 1. PostgreSQL check
+	try {
+		await pool.query('SELECT 1');
+		health.services.postgres.status = 'connected';
+	} catch (err) {
+		health.status = 'unhealthy';
+		health.services.postgres.details = err.message;
+	}
+
+	// 2. Redis check
+	try {
+		const redisClient = await faceQueue.client;
+		await redisClient.ping();
+		health.services.redis.status = 'connected';
+	} catch (err) {
+		health.status = 'unhealthy';
+		health.services.redis.details = err.message;
+	}
+
+	// 3. Milvus check (via ML Service)
+	try {
+		const mlRes = await axios.get(`${ML_SERVICE_URL}/health`, { timeout: 3000 });
+		if (mlRes.data && mlRes.data.milvus_connected) {
+			health.services.milvus.status = 'connected';
+		} else {
+			health.status = 'unhealthy';
+			health.services.milvus.details = 'Milvus reported as disconnected from ML Service';
+		}
+	} catch (err) {
+		health.status = 'unhealthy';
+		health.services.milvus.details = `ML Service unreachable: ${err.message}`;
+	}
+
+	return res.status(200).json(health);
+};
+
 module.exports = {
 	enrollEmployee,
 	reEnrollEmployee,
@@ -356,4 +406,5 @@ module.exports = {
 	getAllEmployees,
 	getEmployeeById,
 	deleteEmployee,
+	getSystemHealth,
 };

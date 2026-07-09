@@ -62,7 +62,7 @@ const createCamera = async (req, res) => {
 			RETURNING cam_id, site_id, site_name, camera_label, created_at;
 		`;
 
-		const cam_id = randomUUID();
+		const cam_id = req.body.cam_id || randomUUID();
 		const { rows } = await pool.query(query, [cam_id, site_id, site_name || null, camera_label]);
 
 		return res.status(201).json(rows[0]);

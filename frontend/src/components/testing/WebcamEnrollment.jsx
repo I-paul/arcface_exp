@@ -2,15 +2,15 @@ import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
 
 /**
- * WebcamEnrollment Component (Local Testing with IP Camera & Automated 5-Frame Capture)
+ * WebcamEnrollment Component (Webcam & IP Camera Biometric Enrollment)
  * 
  * Supports capturing from either:
  * 1. Local USB Webcam (via browser getUserMedia)
  * 2. Network IP Camera (via HTTP MJPEG/JPEG stream URL)
  * 
- * When 'Capture & Register' is clicked, it automatically captures 5 frames in rapid
- * succession (with 400ms intervals to allow angle changes), compiles them into JPEG Blobs,
- * and submits them as a multipart POST to /api/enroll under the 'files' and 'files[]' keys.
+ * When 'Capture & Register' is clicked, it compiles 5 snaps and submits them
+ * as a multipart POST to /api/enroll under the 'files' form key.
+ * Supports both automatic interval capture (1.5s delay) and manual snapping.
  */
 export default function WebcamEnrollment() {
   const videoRef = useRef(null);
@@ -23,16 +23,21 @@ export default function WebcamEnrollment() {
   const [name, setName] = useState('');
 
   // Source configuration states
-  const [sourceType, setSourceType] = useState('webcam'); // 'webcam' or 'ipcamera'
-  const [ipAddress, setIpAddress] = useState('192.168.1.50');
+  const [sourceType, setSourceType] = useState('ipcamera'); // Default to network IP camera
+  const [ipAddress, setIpAddress] = useState('10.1.31.216');
   const [ipPort, setIpPort] = useState('8080');
   const [ipPath, setIpPath] = useState('/video');
   
   // Camera capture states
   const [cameraActive, setCameraActive] = useState(true);
   const [shutterFlash, setShutterFlash] = useState(false);
-  const [captureProgress, setCaptureProgress] = useState(0); // 0: Idle, 1-5: Capturing frame X
+  const [captureProgress, setCaptureProgress] = useState(0); // 0: Idle, 1-5: captured X frames
   const [capturedPreviews, setCapturedPreviews] = useState([]); // Visual previews of the 5 captured frames
+  const [collectedBlobs, setCollectedBlobs] = useState([]);
+
+  // Capture mode configuration
+  const [captureMode, setCaptureMode] = useState('auto'); // 'auto' (interval) or 'manual' (click to snap)
+  const [isCapturingManual, setIsCapturingManual] = useState(false);
 
   // Feedback & Loading states
   const [isLoading, setIsLoading] = useState(false);
@@ -133,9 +138,9 @@ export default function WebcamEnrollment() {
     });
   };
 
-  // --- Trigger Automated 5-Frame Capture & Submit ---
+  // --- Trigger Capture Sequence ---
   const startEnrollmentSequence = async (e) => {
-    e.preventDefault();
+    if (e) e.preventDefault();
 
     if (!empId.trim() || !name.trim()) {
       setErrorAlert('Please provide both Employee ID and Full Name.');
@@ -145,11 +150,18 @@ export default function WebcamEnrollment() {
     setErrorAlert(null);
     setSuccessToast(null);
     setCapturedPreviews([]);
+    setCollectedBlobs([]);
 
-    const collectedBlobs = [];
-    const collectedPreviews = [];
+    if (captureMode === 'manual') {
+      setIsCapturingManual(true);
+      setCaptureProgress(0);
+      return;
+    }
 
-    // Capture 5 frames at 400ms intervals
+    // Auto Mode: Capture 5 frames at 1.5s intervals (increased time between snaps)
+    const blobs = [];
+    const previews = [];
+
     for (let step = 1; step <= 5; step++) {
       setCaptureProgress(step);
       
@@ -159,9 +171,9 @@ export default function WebcamEnrollment() {
 
       try {
         const { blob, previewUrl } = await captureSingleFrameBlob();
-        collectedBlobs.push(blob);
-        collectedPreviews.push(previewUrl);
-        setCapturedPreviews([...collectedPreviews]);
+        blobs.push(blob);
+        previews.push(previewUrl);
+        setCapturedPreviews([...previews]);
       } catch (err) {
         console.error(`Frame capture step ${step} failed:`, err);
         setErrorAlert("Capture Error: Failed to grab frame. If using IP camera, ensure CORS cross-origin headers are configured.");
@@ -169,13 +181,54 @@ export default function WebcamEnrollment() {
         return;
       }
 
-      // Wait 400ms before next capture (except for the last one)
+      // Wait 1.5 seconds between snaps to allow face angle adjustments
       if (step < 5) {
-        await new Promise((r) => setTimeout(r, 450));
+        await new Promise((r) => setTimeout(r, 1500));
       }
     }
 
     setCaptureProgress(0);
+    submitEnrollment(blobs);
+  };
+
+  // --- Capture Manual Snapshot ---
+  const captureManualSnapshot = async () => {
+    if (collectedBlobs.length >= 5) return;
+
+    // Trigger flash feedback
+    setShutterFlash(true);
+    setTimeout(() => setShutterFlash(false), 120);
+
+    try {
+      const { blob, previewUrl } = await captureSingleFrameBlob();
+      
+      const newBlobs = [...collectedBlobs, blob];
+      const newPreviews = [...capturedPreviews, previewUrl];
+      
+      setCollectedBlobs(newBlobs);
+      setCapturedPreviews(newPreviews);
+      setCaptureProgress(newBlobs.length);
+
+      if (newBlobs.length === 5) {
+        setIsCapturingManual(false);
+        setCaptureProgress(0);
+        submitEnrollment(newBlobs);
+      }
+    } catch (err) {
+      console.error("Manual frame capture failed:", err);
+      setErrorAlert("Capture Error: Failed to grab frame. Check camera or CORS permissions.");
+    }
+  };
+
+  const cancelManualCapture = () => {
+    setIsCapturingManual(false);
+    setCaptureProgress(0);
+    setCapturedPreviews([]);
+    setCollectedBlobs([]);
+  };
+
+  // --- Submit Enrollment ---
+  const submitEnrollment = async (blobsToSubmit) => {
     setIsLoading(true);
 
     // Build uploader FormData
@@ -184,7 +237,7 @@ export default function WebcamEnrollment() {
     formData.append('name', name.trim());
 
     // Append all 5 collected Blobs under exactly 'files' key name
-    collectedBlobs.forEach((blob, idx) => {
+    blobsToSubmit.forEach((blob, idx) => {
       const filename = `${empId.trim()}-webcam-${idx + 1}.jpg`;
       formData.append('files', blob, filename);
     });
@@ -207,8 +260,10 @@ export default function WebcamEnrollment() {
       // Reset text inputs
       setEmpId('');
       setName('');
+      setCapturedPreviews([]);
+      setCollectedBlobs([]);
     } catch (err) {
-      console.error('IP/Webcam multi-frame registration error:', err);
+      console.error('Biometric registration error:', err);
       const errMsg = err.response?.data?.message || err.response?.data?.error || err.message || 'An error occurred during registration.';
       setErrorAlert(errMsg);
     } finally {
@@ -225,7 +280,7 @@ export default function WebcamEnrollment() {
 
       <div className="mb-6 relative">
         <h2 className="text-xl font-bold text-slate-100 font-sans tracking-wide">Webcam & IP Camera Enrollment</h2>
-        <p className="text-xs text-slate-400 mt-1">Enrolls face signatures by auto-capturing **5 frames** in sequence to match vector DB centroid quality checks.</p>
+        <p className="text-xs text-slate-400 mt-1">Enrolls face signatures by capturing **5 frames** in sequence to match vector DB centroid quality checks.</p>
       </div>
 
       {/* SOURCE SWITCHER */}
@@ -290,6 +345,37 @@ export default function WebcamEnrollment() {
             </div>
           </div>
         )}
+      </div>
+
+      {/* CAPTURE MODE SELECTOR */}
+      <div className="mb-5 p-3.5 bg-slate-950/60 border border-slate-850 rounded-xl flex items-center justify-between z-10 relative">
+        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Capture Configuration</span>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={isCapturingManual || isLoading}
+            onClick={() => setCaptureMode('auto')}
+            className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+              captureMode === 'auto' 
+                ? 'bg-orange-600 text-white' 
+                : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Auto Snap (1.5s Delay)
+          </button>
+          <button
+            type="button"
+            disabled={isCapturingManual || isLoading}
+            onClick={() => setCaptureMode('manual')}
+            className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+              captureMode === 'manual' 
+                ? 'bg-orange-600 text-white' 
+                : 'bg-slate-900 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Manual Snap
+          </button>
+        </div>
       </div>
 
       {/* SUCCESS TOAST */}
@@ -393,7 +479,7 @@ export default function WebcamEnrollment() {
               <div className="w-36 h-48 border border-dashed border-cyan-400/20 rounded-[50px] flex items-center justify-center">
                 {captureProgress > 0 && (
                   <span className="text-xs font-mono font-bold text-cyan-400 bg-slate-950/80 border border-cyan-400/30 px-3 py-1 rounded animate-pulse">
-                    CAPTURING FRAME {captureProgress} / 5
+                    CAPTURED {captureProgress} / 5
                   </span>
                 )}
               </div>
@@ -401,7 +487,7 @@ export default function WebcamEnrollment() {
           </div>
         </div>
 
-        {/* THUMBNAIL PREVIEWS OF THE 5 AUTOCAPTURED FRAMES */}
+        {/* THUMBNAIL PREVIEWS OF THE 5 CAPTURED FRAMES */}
         <div className="grid grid-cols-5 gap-2 bg-slate-950/50 border border-slate-800 p-4 rounded-xl">
           {Array.from({ length: 5 }).map((_, idx) => {
             const preview = capturedPreviews[idx];
@@ -426,7 +512,7 @@ export default function WebcamEnrollment() {
             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Employee ID</label>
             <input 
               required
-              disabled={isLoading || captureProgress > 0}
+              disabled={isLoading || captureProgress > 0 || isCapturingManual}
               type="text" 
               value={empId}
               onChange={(e) => setEmpId(e.target.value)}
@@ -439,7 +525,7 @@ export default function WebcamEnrollment() {
             <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Full Name</label>
             <input 
               required
-              disabled={isLoading || captureProgress > 0}
+              disabled={isLoading || captureProgress > 0 || isCapturingManual}
               type="text" 
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -449,37 +535,58 @@ export default function WebcamEnrollment() {
           </div>
         </div>
 
-        {/* SUBMIT BUTTON */}
+        {/* CONTROLS (AUTOSNAP VS MANUALSNAP TAKING) */}
         <div className="pt-2">
-          <button
-            type="submit"
-            disabled={isLoading || (sourceType === 'webcam' && !cameraActive) || captureProgress > 0}
-            className={`w-full py-3.5 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition-all ${
-              isLoading || (sourceType === 'webcam' && !cameraActive) || captureProgress > 0
-                ? 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed'
-                : 'bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 hover:shadow-blue-500/20 active:scale-98 shadow-lg shadow-blue-500/10 cursor-pointer'
-            }`}
-          >
-            {isLoading ? (
-              <>
-                <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                <span>Registering Biometric Profile...</span>
-              </>
-            ) : captureProgress > 0 ? (
-              <span>Capturing Facial Data...</span>
-            ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                <span>Capture & Register</span>
-              </>
-            )}
-          </button>
+          {isCapturingManual ? (
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={cancelManualCapture}
+                className="flex-1 py-3.5 bg-slate-900 border border-slate-800 hover:bg-slate-850 text-slate-300 rounded-xl text-xs font-bold transition-all"
+              >
+                Cancel Capture
+              </button>
+              <button
+                type="button"
+                onClick={captureManualSnapshot}
+                className="flex-1 py-3.5 bg-gradient-to-r from-orange-600 to-amber-500 hover:from-orange-500 hover:to-amber-450 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-orange-500/10"
+              >
+                Snap Frame ({collectedBlobs.length + 1}/5)
+              </button>
+            </div>
+          ) : (
+            <button
+              type="submit"
+              disabled={isLoading || (sourceType === 'webcam' && !cameraActive) || captureProgress > 0}
+              className={`w-full py-3.5 text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition-all ${
+                isLoading || (sourceType === 'webcam' && !cameraActive) || captureProgress > 0
+                  ? 'bg-slate-800 border border-slate-700 text-slate-500 cursor-not-allowed'
+                  : 'bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 hover:shadow-blue-500/20 active:scale-98 shadow-lg shadow-blue-500/10 cursor-pointer'
+              }`}
+            >
+              {isLoading ? (
+                <>
+                  <svg className="animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>
+                  <span>Registering Biometric Profile...</span>
+                </>
+              ) : captureProgress > 0 ? (
+                <span>Auto Capturing Facial Data...</span>
+              ) : (
+                <>
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <span>
+                    {captureMode === 'manual' ? 'Start Manual Capture' : 'Start Auto Capture & Register'}
+                  </span>
+                </>
+              )}
+            </button>
+          )}
         </div>
 
       </form>

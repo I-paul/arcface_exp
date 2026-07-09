@@ -15,6 +15,15 @@ export default {
         'accent-emerald': '#10b981',
         'accent-rose': '#f43f5e',
         'accent-amber': '#f59e0b',
+        // Define intermediate slate colors used throughout the application UI
+        'slate-250': '#b2becd',
+        'slate-350': '#7c8ca0',
+        'slate-650': '#3d4b5f',
+        'slate-850': '#161f30',
+      },
+      spacing: {
+        // Custom padding/margin utility used for search input icons (34px)
+        '8.5': '2.125rem',
       },
       fontFamily: {
         sans: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'],
