@@ -54,34 +54,6 @@ class RecognitionPipeline:
         tracker = self._get_session(session_id)
         return tracker.update(bboxes=bboxes, now=now)
 
-    def should_embed(self, track, bbox: Tuple[float, float, float, float], now: float) -> bool:
-        if track is None:
-            return True
-
-        if track.last_embed_ts is None:
-            return True
-
-        # Time-based gating
-        if (now - track.last_embed_ts) >= self.embed_interval:
-            return True
-
-        # Confidence-based gating
-        conf = self._to_scalar(track.last_confidence)
-        if conf is None:
-            return True
-
-        if conf < self.low_confidence_threshold:
-            return True
-
-        # BBox size change gating
-        prev_area = max(1.0, (track.bbox[2] - track.bbox[0]) * (track.bbox[3] - track.bbox[1]))
-        new_area = max(1.0, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
-        change_ratio = abs(new_area - prev_area) / prev_area
-        if change_ratio >= self.bbox_change_threshold:
-            return True
-
-        return False
-
     def update_track_result(self, session_id: str, track_id: int, bbox: Tuple[float, float, float, float], result: dict, now: float):
         tracker = self._get_session(session_id)
         track = tracker.get_track(track_id)
@@ -106,61 +78,3 @@ class RecognitionPipeline:
         if not track:
             return None
         return track.last_result
-
-    def aggregate_embedding(self, track) -> Optional[np.ndarray]:
-        if not track.embeddings:
-            return None
-        embeddings_array = np.vstack(track.embeddings)
-        centroid = np.mean(embeddings_array, axis=0)
-        norm = np.linalg.norm(centroid)
-        if norm > 0:
-            centroid = centroid / norm
-        return centroid
-
-    def perform_voting(self, track, window_size: int = 5, threshold: int = 3) -> Tuple[Optional[str], float, bool]:
-        if not track.recognition_history:
-            return None, 0.0, False
-
-        # Get the last window_size recognition attempts
-        history = track.recognition_history[-window_size:]
-        
-        # Count occurrences of each non-None person_id
-        from collections import Counter
-        counts = Counter(item.get("person_id") for item in history if item.get("person_id") is not None)
-        
-        if not counts:
-            track.track_confidence = 0.0
-            return None, 0.0, False
-            
-        majority_id, count = counts.most_common(1)[0]
-        
-        if count >= threshold:
-            # Average similarity score for frames matching majority_id
-            matching_scores = [
-                item.get("confidence", 0.0) 
-                for item in history 
-                if item.get("person_id") == majority_id
-            ]
-            avg_similarity = float(np.mean(matching_scores)) if matching_scores else 0.0
-            
-            # Compute confidence score
-            vote_ratio = count / len(history)
-            track_len = len(track.embeddings)
-            track_length_factor = min(1.0, track_len / 5.0)
-            
-            score = vote_ratio * avg_similarity * track_length_factor
-            clamped_confidence = float(max(0.0, min(1.0, score)))
-            
-            track.track_confidence = clamped_confidence
-            
-            # Log vote stats for debugging
-            logger.info(
-                f"[VOTING] emp_id={majority_id}, vote_ratio={vote_ratio:.2f}, "
-                f"avg_similarity={avg_similarity:.2f}, track_len={track_len}, "
-                f"track_confidence={clamped_confidence:.3f}"
-            )
-            
-            return majority_id, clamped_confidence, True
-            
-        track.track_confidence = 0.0
-        return None, 0.0, False

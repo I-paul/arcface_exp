@@ -3,4 +3,4 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app
-CMD ["python", "camera_ingestor.py", "--config", "config.yaml"]
+CMD ["python", "camera_ingestor.py"]

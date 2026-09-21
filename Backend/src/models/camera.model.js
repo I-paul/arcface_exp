@@ -1,189 +1,126 @@
 const pool = require('../DB/config');
-const { randomUUID } = require('crypto');
 
 /**
- * Get all cameras
+ * Get all cameras with room information
+ * GET /api/cameras
  */
 const getAllCameras = async (req, res) => {
-	try {
-		const query = `
-			SELECT cam_id, site_id, site_name, camera_label, created_at
-			FROM cameras
-			ORDER BY created_at DESC;
-		`;
-		const { rows } = await pool.query(query);
-		return res.status(200).json(rows);
-	} catch (error) {
-		console.error('[ERROR] Failed to fetch cameras:', error.message);
-		return res.status(500).json({ message: 'Failed to fetch cameras' });
-	}
+  try {
+    const { rows } = await pool.query(`
+      SELECT c.cam_id, c.room_id, r.room_name, c.rtsp_url, c.is_active, c.created_at
+      FROM cameras c
+      JOIN rooms r ON c.room_id = r.room_id
+      ORDER BY r.room_name
+    `);
+    return res.status(200).json(rows);
+  } catch (error) {
+    console.error('[ERROR] Failed to fetch cameras:', error.message);
+    return res.status(500).json({ message: 'Failed to fetch cameras' });
+  }
 };
 
 /**
- * Get camera by ID
- */
-const getCameraById = async (req, res) => {
-	try {
-		const { cam_id } = req.params;
-		const query = `
-			SELECT cam_id, site_id, site_name, camera_label, created_at
-			FROM cameras
-			WHERE cam_id = $1;
-		`;
-		const { rows } = await pool.query(query, [cam_id]);
-
-		if (!rows.length) {
-			return res.status(404).json({ message: 'Camera not found' });
-		}
-
-		return res.status(200).json(rows[0]);
-	} catch (error) {
-		console.error('[ERROR] Failed to fetch camera:', error.message);
-		return res.status(500).json({ message: 'Failed to fetch camera' });
-	}
-};
-
-/**
- * Create new camera
+ * Create a new camera
+ * POST /api/cameras
+ * Body: { room_id, rtsp_url }
  */
 const createCamera = async (req, res) => {
-	try {
-		const { site_id, site_name, camera_label } = req.body;
+  try {
+    const { room_id, rtsp_url } = req.body;
 
-		if (!site_id || !camera_label) {
-			return res.status(400).json({ 
-				message: 'Missing required fields: site_id and camera_label' 
-			});
-		}
+    if (!room_id || !rtsp_url) {
+      return res.status(400).json({ message: 'room_id and rtsp_url are required' });
+    }
 
-		const query = `
-			INSERT INTO cameras (cam_id, site_id, site_name, camera_label, created_at)
-			VALUES ($1, $2, $3, $4, NOW())
-			RETURNING cam_id, site_id, site_name, camera_label, created_at;
-		`;
+    // Validate room exists
+    const roomCheck = await pool.query(
+      'SELECT room_id FROM rooms WHERE room_id = $1',
+      [room_id]
+    );
 
-		const cam_id = req.body.cam_id || randomUUID();
-		const { rows } = await pool.query(query, [cam_id, site_id, site_name || null, camera_label]);
+    if (roomCheck.rows.length === 0) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
 
-		return res.status(201).json(rows[0]);
-	} catch (error) {
-		console.error('[ERROR] Failed to create camera:', error.message);
-		return res.status(500).json({ message: 'Failed to create camera' });
-	}
+    // Check if room already has a camera
+    const cameraCheck = await pool.query(
+      'SELECT cam_id FROM cameras WHERE room_id = $1',
+      [room_id]
+    );
+
+    if (cameraCheck.rows.length > 0) {
+      return res.status(409).json({ message: 'Room already has a camera' });
+    }
+
+    const { rows } = await pool.query(
+      'INSERT INTO cameras (cam_id, room_id, rtsp_url, is_active, created_at) VALUES (gen_random_uuid(), $1, $2, TRUE, NOW()) RETURNING *',
+      [room_id, rtsp_url]
+    );
+
+    return res.status(201).json(rows[0]);
+  } catch (error) {
+    console.error('[ERROR] Failed to create camera:', error.message);
+    return res.status(500).json({ message: 'Failed to create camera' });
+  }
 };
 
 /**
- * Register camera (edge agent first boot)
- * Returns only cam_id
- */
-const registerCamera = async (req, res) => {
-	try {
-		const { site_id, site_name, camera_label } = req.body;
-
-		if (!site_id || !camera_label) {
-			return res.status(400).json({
-				message: 'Missing required fields: site_id and camera_label'
-			});
-		}
-
-		const query = `
-			INSERT INTO cameras (cam_id, site_id, site_name, camera_label, created_at)
-			VALUES ($1, $2, $3, $4, NOW())
-			RETURNING cam_id;
-		`;
-
-		const cam_id = randomUUID();
-		const { rows } = await pool.query(query, [cam_id, site_id, site_name || null, camera_label]);
-
-		return res.status(201).json({ cam_id: rows[0].cam_id });
-	} catch (error) {
-		console.error('[ERROR] Failed to register camera:', error.message);
-		return res.status(500).json({ message: 'Failed to register camera' });
-	}
-};
-
-/**
- * Update camera
+ * Update a camera
+ * PUT /api/cameras/:cam_id
+ * Body: { rtsp_url, is_active }
  */
 const updateCamera = async (req, res) => {
-	try {
-		const { cam_id } = req.params;
-		const { site_id, site_name, camera_label } = req.body;
+  try {
+    const { cam_id } = req.params;
+    const { rtsp_url, is_active } = req.body;
 
-		// Check if camera exists
-		const checkQuery = 'SELECT cam_id FROM cameras WHERE cam_id = $1;';
-		const checkResult = await pool.query(checkQuery, [cam_id]);
+    if (rtsp_url === undefined && is_active === undefined) {
+      return res.status(400).json({ message: 'rtsp_url or is_active is required' });
+    }
 
-		if (!checkResult.rows.length) {
-			return res.status(404).json({ message: 'Camera not found' });
-		}
+    const { rows } = await pool.query(
+      'UPDATE cameras SET rtsp_url = $1, is_active = $2 WHERE cam_id = $3 RETURNING *',
+      [rtsp_url, is_active, cam_id]
+    );
 
-		// Build update query dynamically
-		const updateFields = [];
-		const values = [];
-		let paramCount = 1;
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Camera not found' });
+    }
 
-		if (site_id !== undefined) {
-			updateFields.push(`site_id = $${paramCount++}`);
-			values.push(site_id);
-		}
-		if (site_name !== undefined) {
-			updateFields.push(`site_name = $${paramCount++}`);
-			values.push(site_name);
-		}
-		if (camera_label !== undefined) {
-			updateFields.push(`camera_label = $${paramCount++}`);
-			values.push(camera_label);
-		}
-
-		if (!updateFields.length) {
-			return res.status(400).json({ message: 'No fields to update' });
-		}
-
-		values.push(cam_id); // Add cam_id as last parameter
-
-		const updateQuery = `
-			UPDATE cameras
-			SET ${updateFields.join(', ')}
-			WHERE cam_id = $${paramCount}
-			RETURNING cam_id, site_id, site_name, camera_label, created_at;
-		`;
-
-		const { rows } = await pool.query(updateQuery, values);
-
-		return res.status(200).json(rows[0]);
-	} catch (error) {
-		console.error('[ERROR] Failed to update camera:', error.message);
-		return res.status(500).json({ message: 'Failed to update camera' });
-	}
+    return res.status(200).json(rows[0]);
+  } catch (error) {
+    console.error('[ERROR] Failed to update camera:', error.message);
+    return res.status(500).json({ message: 'Failed to update camera' });
+  }
 };
 
 /**
- * Delete camera
+ * Delete a camera
+ * DELETE /api/cameras/:cam_id
  */
 const deleteCamera = async (req, res) => {
-	try {
-		const { cam_id } = req.params;
+  try {
+    const { cam_id } = req.params;
 
-		const query = 'DELETE FROM cameras WHERE cam_id = $1;';
-		const result = await pool.query(query, [cam_id]);
+    const result = await pool.query(
+      'DELETE FROM cameras WHERE cam_id = $1',
+      [cam_id]
+    );
 
-		if (result.rowCount === 0) {
-			return res.status(404).json({ message: 'Camera not found' });
-		}
+    if (result.rowCount === 0) {
+      return res.status(404).json({ message: 'Camera not found' });
+    }
 
-		return res.status(204).send();
-	} catch (error) {
-		console.error('[ERROR] Failed to delete camera:', error.message);
-		return res.status(500).json({ message: 'Failed to delete camera' });
-	}
+    return res.status(204).send();
+  } catch (error) {
+    console.error('[ERROR] Failed to delete camera:', error.message);
+    return res.status(500).json({ message: 'Failed to delete camera' });
+  }
 };
 
 module.exports = {
-	getAllCameras,
-	getCameraById,
-	createCamera,
-	registerCamera,
-	updateCamera,
-	deleteCamera
+  getAllCameras,
+  createCamera,
+  updateCamera,
+  deleteCamera,
 };

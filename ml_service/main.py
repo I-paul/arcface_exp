@@ -2,7 +2,7 @@
 ML Service API Entrypoint
 Face Recognition and Enrollment Service
 """
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, WebSocket, WebSocketDisconnect, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -209,20 +209,27 @@ async def enroll_person(
         for file in files:
             # Read and decode image
             contents = await file.read()
+            logger.info(f"Received file: {file.filename}, size: {len(contents)} bytes")
+            
             nparr = np.frombuffer(contents, np.uint8)
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             if image is None:
+                logger.error(f"cv2.imdecode failed for {file.filename}! nparr size: {len(nparr)}")
                 continue
 
             # Preprocess + embed (strict enrollment profile)
             result = face_processor.process_for_enrollment(image)
             if not result.get("success"):
+                logger.warning(f"Face processor rejected {file.filename}: {result.get('reject_reason')}")
                 continue
             
             embeddings.append(result["embedding"])
+            
+        logger.info(f"Extracted {len(embeddings)} valid embeddings out of {len(files)} files")
         
         if len(embeddings) < 3:
+            logger.error(f"Not enough valid faces: {len(embeddings)}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Only {len(embeddings)} valid faces found. Need at least 3."
@@ -325,13 +332,17 @@ async def re_enroll_person(
 
 # WEBSOCKET FOR STREAMING
 @app.websocket("/ws/recognize")
-async def websocket_recognize(websocket: WebSocket):
+async def websocket_recognize(websocket: WebSocket, cam_id: Optional[str] = Query(default=None)):
     """
     WebSocket endpoint for real-time face recognition streaming
     Receives base64 encoded images and returns recognition results
+
+    Args:
+        cam_id: Optional camera UUID from query parameter (used as session key for tracking).
+                If not provided, uses websocket ID for tracking (test mode).
     """
     await websocket.accept()
-    logger.info(f"WebSocket client connected")
+    logger.info(f"WebSocket client connected (cam_id={cam_id or 'test'})")
     
     try:
         while True:
@@ -404,14 +415,14 @@ async def websocket_recognize(websocket: WebSocket):
                     if image is None:
                         await websocket.send_json({
                             "type": "error",
-                            "message": "Invalid image format"
+                            "message": "Invalid image format"                                                                                                                                                                                                                                                        
                         })
                         continue
                     
                     # Start pipeline latency tracking
                     frame_start_time = time.time()
                     now_ts = frame_start_time
-                    session_key = f"ws:{id(websocket)}"
+                    session_key = cam_id if cam_id else f"ws:{id(websocket)}"  # Use cam_id if provided, else websocket ID
 
                     # Resolve/Increment Frame ID
                     frame_id = message.get("frame_id")
@@ -442,48 +453,39 @@ async def websocket_recognize(websocket: WebSocket):
 
                             preprocess_result = face_processor.preprocess_face(image, face, mode="recognize")
                             if not preprocess_result.usable:
-                                response_faces.append({
-                                    "track_id": track_id,
-                                    "bbox": [x1, y1, x2, y2],
-                                    "label": f"Track-{track_id}",
-                                    "confidence": float(face.det_score),
-                                    "detected": False,
-                                    "person_id": None,
-                                    "reject_reason": preprocess_result.reject_reason,
-                                })
+                                # Skip faces that don't pass preprocessing - don't include in response
                                 continue
 
                             embedding = face_processor.get_embedding(face)
                             search_result = milvus_client.search_face(embedding, top_k=1)
 
-                            recognized = False
                             person_id = None
                             confidence = float(face.det_score)
                             if search_result and search_result.get("person_id") is not None:
                                 person_id = search_result["person_id"]
                                 confidence = float(search_result.get("confidence", confidence))
-                                recognized = confidence >= RECOGNITION_THRESHOLD
+                                if confidence >= RECOGNITION_THRESHOLD:
+                                    # Only include recognized faces in the response
+                                    face_result = {
+                                        "bbox": [x1, y1, x2, y2],
+                                        "roll_number": person_id,
+                                        "confidence": confidence,
+                                    }
+                                    response_faces.append(face_result)
 
-                            face_result = {
-                                "track_id": track_id,
-                                "bbox": [x1, y1, x2, y2],
-                                "label": f"Track-{track_id}",
-                                "confidence": confidence,
-                                "detected": recognized,
-                                "person_id": person_id if recognized else None,
-                                "template_version": search_result.get("template_version") if search_result else None,
-                            }
-
-                            response_faces.append(face_result)
-                            recognition_pipeline.update_track_result(session_key, track_id, (x1, y1, x2, y2), face_result, now_ts)
+                                    # Update track for internal state management
+                                    internal_result = {
+                                        "person_id": person_id,
+                                        "confidence": confidence,
+                                    }
+                                    recognition_pipeline.update_track_result(session_key, track_id, (x1, y1, x2, y2), internal_result, now_ts)
 
                     # Total pipeline latency
                     total_time = (time.time() - frame_start_time) * 1000
                     record_latency("total", total_time)
 
-                    # Return the list of all faces and bounding boxes
+                    # Return only frame_id and recognized faces with minimal payload
                     await websocket.send_json({
-                        "type": "result",
                         "frame_id": frame_id,
                         "faces": response_faces
                     })

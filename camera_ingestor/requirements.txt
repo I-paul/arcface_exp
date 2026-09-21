@@ -3,3 +3,5 @@ numpy
 redis
 pyyaml
 ffmpeg-python
+requests
+psycopg2-binary

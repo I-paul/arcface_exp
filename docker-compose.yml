@@ -158,36 +158,10 @@ services:
       - ML_SERVICE_URL=http://ml_service:8000
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - STREAM_KEY=camera_ingestor:stream
+      - GRACE_PERIOD_MINUTES=15
       - DB_HOST=postgres
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
-
-  # WORKER - Face Recognition Queue Processor
-  worker:
-    build: ./Backend
-    command: node src/workers/face.worker.js
-    env_file:
-      - .env
-    volumes:
-      - ./Backend:/app
-      - worker_node_modules:/app/node_modules
-    depends_on:
-      redis:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      ml_service:
-        condition: service_started
-      backend:
-        condition: service_started
-    networks:
-      - app-network
-    environment:
-      - NODE_ENV=development
-      - ML_SERVICE_URL=http://ml_service:8000
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DB_HOST=postgres
-      - BACKEND_URL=http://backend:3000
 
   # FRONTEND - React / Vite user interface
   frontend:
@@ -205,6 +179,7 @@ services:
       - CHOKIDAR_USEPOLLING=true
       - VITE_API_BASE_URL=http://localhost:3000
       - VITE_WS_URL=http://localhost:3000
+      - VITE_MOCK_MODE=true
     depends_on:
       - backend
     networks:
@@ -219,28 +194,12 @@ services:
       - REDIS_PORT=6379
       - STREAM_KEY=camera_ingestor:stream
       - HEARTBEAT_TTL_S=60
-    depends_on:
-      - redis
-    networks:
-      - app-network
-
-  # CAMERA ADAPTER - reads Redis stream and enqueues jobs into BullMQ
-  camera-adapter:
-    image: node:18
-    working_dir: /app
-    volumes:
-      - ./camera_ingestor/node_adapter:/app
-      - camera_adapter_node_modules:/app/node_modules
-    command: sh -c "npm install --no-audit --no-fund && node adapter.js"
-    environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - STREAM_KEY=camera_ingestor:stream
-      - STREAM_GROUP=camera_ingestor_group
-      - STREAM_CONSUMER=adapter_consumer_1
+      - BACKEND_URL=http://backend:3000
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
     depends_on:
       - redis
       - backend
+      - postgres
     networks:
       - app-network
 
@@ -258,6 +217,4 @@ volumes:
   postgres_data:
   redis_data:
   backend_node_modules:
-  worker_node_modules:
-  camera_adapter_node_modules:
   frontend_node_modules:

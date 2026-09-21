@@ -19,7 +19,8 @@ from datetime import datetime
 import cv2
 import numpy as np
 import redis
-import yaml
+import requests
+import psycopg2
 
 STOP_EVENT = threading.Event()
 
@@ -52,7 +53,6 @@ class CameraWorker(threading.Thread):
 
     def run(self):
         cam_id = self.cam_cfg['cam_id']
-        site_id = self.cam_cfg.get('site_id')
         rtsp = self.cam_cfg['rtsp']
         sample_interval = float(self.cam_cfg.get('sample_interval_s', 2))
         min_motion_frames = int(self.cam_cfg.get('min_motion_frames', 1))
@@ -104,8 +104,7 @@ class CameraWorker(threading.Thread):
                                 'imageBase64': image_b64,
                                 'originalName': f"{cam_id}-{int(now)}.jpg",
                                 'requestTime': datetime.utcnow().isoformat() + 'Z',
-                                'cam_id': cam_id,
-                                'site_id': site_id
+                                'cam_id': cam_id
                             }
 
                             # push to redis stream with bounded length to avoid unbounded growth
@@ -138,28 +137,109 @@ class CameraWorker(threading.Thread):
                 time.sleep(2)
 
 
-def load_config(path):
-    with open(path, 'r') as f:
-        cfg = yaml.safe_load(f)
-    return cfg
+def fetch_active_cameras_from_db(database_url, timeout=10):
+    """
+    Query PostgreSQL database directly for active cameras
+    Returns list of camera configs suitable for CameraWorker
+    """
+    try:
+        conn = psycopg2.connect(database_url)
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT c.cam_id, c.rtsp_url, r.room_name
+            FROM cameras c
+            JOIN rooms r ON c.room_id = r.room_id
+            WHERE c.is_active = TRUE
+            ORDER BY r.room_name
+        """)
+
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        # Transform to CameraWorker config format
+        camera_configs = []
+        for row in rows:
+            cam_id, rtsp_url, room_name = row
+            camera_configs.append({
+                'cam_id': str(cam_id),
+                'rtsp': rtsp_url,
+                'sample_interval_s': 2,  # Default 2 seconds
+            })
+
+        return camera_configs
+    except Exception as e:
+        print(f"[ingestor] Failed to fetch cameras from database: {e}")
+        return []
+
+
+def fetch_active_cameras_from_api(backend_url, timeout=10):
+    """
+    Query Backend API for active cameras (fallback method)
+    Returns list of camera configs suitable for CameraWorker
+    """
+    try:
+        response = requests.get(
+            f"{backend_url}/api/cameras",
+            params={'is_active': 'true'},
+            timeout=timeout
+        )
+        response.raise_for_status()
+        cameras_data = response.json()
+
+        # Transform to CameraWorker config format
+        camera_configs = []
+        for cam in cameras_data:
+            if cam.get('is_active'):
+                camera_configs.append({
+                    'cam_id': cam['cam_id'],
+                    'rtsp': cam['rtsp_url'],
+                    'sample_interval_s': 2,  # Default 2 seconds
+                })
+
+        return camera_configs
+    except Exception as e:
+        print(f"[ingestor] Failed to fetch cameras from backend API: {e}")
+        return []
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', '-c', default='config.yaml')
+    parser.add_argument('--backend-url', default=None, help='Backend API URL (default: from env BACKEND_URL or http://localhost:3000)')
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    # Redis configuration from environment
+    redis_host = os.getenv('REDIS_HOST', 'localhost')
+    redis_port = int(os.getenv('REDIS_PORT', '6379'))
+    stream_key = os.getenv('STREAM_KEY', 'camera_ingestor:stream')
+    heartbeat_ttl = int(os.getenv('HEARTBEAT_TTL_S', '60'))
 
-    redis_cfg = cfg.get('redis', {})
-    host = os.getenv('REDIS_HOST', redis_cfg.get('host', 'localhost'))
-    port = int(os.getenv('REDIS_PORT', redis_cfg.get('port', 6379)))
-    stream_key = os.getenv('STREAM_KEY', redis_cfg.get('stream_key', 'camera_ingestor:stream'))
-    heartbeat_ttl = int(os.getenv('HEARTBEAT_TTL_S', redis_cfg.get('heartbeat_ttl_s', 60)))
+    # Database or Backend API
+    database_url = os.getenv('DATABASE_URL')
+    backend_url = args.backend_url or os.getenv('BACKEND_URL', 'http://localhost:3000')
 
-    r = redis.Redis(host=host, port=port, decode_responses=True)
+    r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
-    cameras = cfg.get('cameras', [])
+    # Fetch active cameras (prefer database, fallback to API)
+    # Retry indefinitely on first boot — DB may be empty until admin adds cameras via UI
+    POLL_INTERVAL_S = 30
+    while True:
+        if database_url:
+            cameras = fetch_active_cameras_from_db(database_url)
+        else:
+            cameras = fetch_active_cameras_from_api(backend_url)
+
+        if cameras:
+            break
+
+        print(f"[ingestor] No active cameras found. Retrying in {POLL_INTERVAL_S}s...")
+        time.sleep(POLL_INTERVAL_S)
+        if STOP_EVENT.is_set():
+            sys.exit(0)
+
+    print(f"[ingestor] Found {len(cameras)} active camera(s)")
+
     workers = []
     for cam in cameras:
         w = CameraWorker(cam, r, stream_key, heartbeat_ttl)

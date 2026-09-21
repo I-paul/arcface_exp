@@ -1,6 +1,5 @@
 const axios = require('axios');
 const WebSocket = require('ws');
-const { QueueEvents } = require('bullmq');
 const pool = require('../DB/config');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
@@ -11,39 +10,6 @@ const ML_WS_URL = ML_SERVICE_URL.replace(/^http/, 'ws') + '/ws/recognize';
  * @param {Server} io - Socket.IO server instance
  */
 module.exports = function socketHandler(io) {
-  const queueEvents = new QueueEvents('face-recognition', {
-    connection: {
-      host: process.env.REDIS_HOST || 'localhost',
-      port: process.env.REDIS_PORT || 6379,
-    },
-  });
-
-  // Listen for job completion events and emit to clients
-  queueEvents.on('completed', async ({ jobId, returnvalue }) => {
-    console.log(`[Socket.IO] Job ${jobId} completed, emitting result to clients`);
-    io.emit('job-completed', {
-      job_id: jobId,
-      result: returnvalue,
-      status: 'completed',
-    });
-  });
-
-  queueEvents.on('failed', ({ jobId, failedReason }) => {
-    console.log(`[Socket.IO] Job ${jobId} failed: ${failedReason}`);
-    io.emit('job-failed', {
-      job_id: jobId,
-      error: failedReason,
-      status: 'failed',
-    });
-  });
-
-  queueEvents.on('progress', ({ jobId, data }) => {
-    io.emit('job-progress', {
-      job_id: jobId,
-      progress: data,
-    });
-  });
-
   async function recognizeViaWebSocket(imageBase64, frameId = null) {
     return new Promise((resolve, reject) => {
       let responded = false;
@@ -144,99 +110,39 @@ module.exports = function socketHandler(io) {
         const mlResponse = await recognizeViaWebSocket(image, data.frame_id);
 
         const response = {
-          camera_id,
+          cam_id: camera_id,
           frame_id: mlResponse.frame_id || data.frame_id || null,
-          detected: Array.isArray(mlResponse.faces) ? mlResponse.faces.some((f) => f.detected) : false,
           faces: Array.isArray(mlResponse.faces) ? mlResponse.faces : [],
-          message: mlResponse.message || 'Recognition complete',
         };
 
-        // Resolve names for each detected face if possible
+        // Resolve names for each detected face (test recognition mode for webcam testing)
         if (Array.isArray(response.faces)) {
           await Promise.all(response.faces.map(async (face) => {
-            const personId = face.person_id || face.emp_id || null;
-            if (!personId) {
+            const studentId = face.roll_number || face.person_id || null;
+            if (!studentId) {
               face.name = face.name || 'Unknown';
               return;
             }
 
             try {
-              const query = 'SELECT name, emp_id FROM employees WHERE milvus_id::text = $1 OR emp_id = $1 LIMIT 1';
-              const { rows } = await pool.query(query, [String(personId)]);
+              const query = 'SELECT name, student_id FROM students WHERE student_id = $1 LIMIT 1';
+              const { rows } = await pool.query(query, [String(studentId)]);
               if (rows.length) {
-                const emp = rows[0];
-                face.name = emp.name;
-                face.emp_id = emp.emp_id;
-
-                // Log attendance event automatically for live socket recognition
-                const cooldownQuery = `
-                  SELECT event_time, action
-                  FROM attendance_events
-                  WHERE emp_id = $1
-                  ORDER BY event_time DESC
-                  LIMIT 1;
-                `;
-                const { rows: cooldownRows } = await pool.query(cooldownQuery, [emp.emp_id]);
-
-                let resolvedCamId = null;
-                let resolvedSiteId = 'default-site';
-
-                // Try resolving a camera from DB to satisfy foreign keys
-                const camQuery = 'SELECT cam_id, site_id FROM cameras LIMIT 1';
-                const camRes = await pool.query(camQuery);
-                if (camRes.rows.length) {
-                  resolvedCamId = camRes.rows[0].cam_id;
-                  resolvedSiteId = camRes.rows[0].site_id;
-                }
-
-                let shouldLog = true;
-                let nextAction = 'IN';
-
-                if (cooldownRows.length) {
-                  const lastEvent = cooldownRows[0];
-                  const lastEventTime = new Date(lastEvent.event_time).getTime();
-                  const now = Date.now();
-                  
-                  // 1-minute cooldown is perfect for live interactive webcam/IP-cam recognition testing
-                  const cooldownMs = 60 * 1000;
-                  if (now - lastEventTime < cooldownMs) {
-                    shouldLog = false;
-                  } else {
-                    nextAction = lastEvent.action === 'IN' ? 'OUT' : 'IN';
-                  }
-                }
-
-                if (shouldLog) {
-                  const insertQuery = `
-                    INSERT INTO attendance_events (
-                      id, emp_id, cam_id, site_id, event_time, action, 
-                      similarity_score, liveness_passed, created_at
-                    )
-                    VALUES (
-                      gen_random_uuid(), $1, $2, $3, NOW(), $4, $5, TRUE, NOW()
-                    );
-                  `;
-                  await pool.query(insertQuery, [
-                    emp.emp_id,
-                    resolvedCamId,
-                    resolvedSiteId,
-                    nextAction,
-                    face.score || face.confidence || 0.95
-                  ]);
-                  console.log(`[Socket.IO] Automatically logged attendance event (${nextAction}) for employee ${emp.emp_id}`);
-                }
-
+                const student = rows[0];
+                face.name = student.name;
+                face.student_id = student.student_id;
+                console.log(`[Socket.IO] Test recognition: detected student ${student.student_id} (${student.name})`);
               } else {
                 face.name = face.name || 'Unknown';
               }
             } catch (lookupErr) {
-              console.error('[Socket.IO] Name & Attendance lookup error:', lookupErr.message);
+              console.error('[Socket.IO] Student lookup error:', lookupErr.message);
               face.name = face.name || 'Unknown';
             }
           }));
         }
 
-        // Emit result back to the requesting client and broadcast compatible event for other listeners
+        // Emit result back to the requesting client and broadcast
         socket.emit('recognition-result', response);
         io.emit('face-recognition-result', response);
 
@@ -244,11 +150,10 @@ module.exports = function socketHandler(io) {
         console.error('[Socket.IO] Recognition error:', error.message);
         const errorMessage = error.response?.data?.detail || error.message || 'Recognition failed';
         const errPayload = {
-          message: errorMessage,
-          camera_id: data?.camera_id || 'unknown'
+          cam_id: data?.camera_id || 'unknown',
+          error: errorMessage
         };
         socket.emit('recognition-error', errPayload);
-        io.emit('face-recognition-error', errPayload);
       }
     });
 

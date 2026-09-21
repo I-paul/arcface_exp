@@ -4,7 +4,6 @@
   "description": "Adapter to forward camera ingestor Redis stream into BullMQ queue",
   "main": "adapter.js",
   "dependencies": {
-    "bullmq": "^1.67.0",
     "ioredis": "^4.28.5"
   }
 }

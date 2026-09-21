@@ -1,4 +1,3 @@
-const { Queue } = require('bullmq');
 const IORedis = require('ioredis');
 
 const REDIS_HOST = process.env.REDIS_HOST || '127.0.0.1';
@@ -6,10 +5,10 @@ const REDIS_PORT = process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT) : 6
 const STREAM_KEY = process.env.STREAM_KEY || 'camera_ingestor:stream';
 const GROUP = process.env.STREAM_GROUP || 'camera_ingestor_group';
 const CONSUMER = process.env.STREAM_CONSUMER || 'adapter_consumer_1';
+const PUB_CHANNEL = 'camera:frames';
 
 const connection = { host: REDIS_HOST, port: REDIS_PORT };
 const client = new IORedis(connection);
-const queue = new Queue('face-recognition', { connection });
 
 async function ensureGroup() {
   try {
@@ -30,8 +29,8 @@ async function run() {
 
   while (true) {
     try {
-      // Block for 2s
-      const resp = await client.xreadgroup('GROUP', GROUP, CONSUMER, 'BLOCK', 2000, 'COUNT', 10, 'STREAMS', STREAM_KEY, '>');
+      // Block for 100ms (reduced from 2000ms for lower latency)
+      const resp = await client.xreadgroup('GROUP', GROUP, CONSUMER, 'BLOCK', 100, 'COUNT', 10, 'STREAMS', STREAM_KEY, '>');
       if (!resp) continue;
 
       for (const [streamName, messages] of resp) {
@@ -43,20 +42,18 @@ async function run() {
           }
 
           try {
-            // Build job payload matching backend expectation
+            // Build lean payload for Redis Pub/Sub
             const payload = {
+              cam_id: data.cam_id || 'cam-1',
+              frame_id: parseInt(data.frame_id) || Date.now(),
               imageBase64: data.imageBase64,
-              originalName: data.originalName || 'frame.jpg',
-              requestTime: data.requestTime,
-              cam_id: data.cam_id || null,
-              site_id: data.site_id || null,
             };
 
-            // Add to bullmq queue
-            const job = await queue.add('recognize-face', payload);
-            console.log(`Added job ${job.id} from stream id ${id}`);
+            // Publish to Redis Pub/Sub channel for backend to consume
+            await client.publish(PUB_CHANNEL, JSON.stringify(payload));
+            console.log(`Published frame ${payload.frame_id} from cam ${payload.cam_id} to ${PUB_CHANNEL}`);
 
-            // Acknowledge message
+            // Acknowledge and delete message from stream
             await client.xack(STREAM_KEY, GROUP, id);
             await client.xdel(STREAM_KEY, id);
           } catch (err) {
@@ -66,7 +63,7 @@ async function run() {
       }
     } catch (err) {
       console.error('Adapter error', err);
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, 1000));
     }
   }
 }

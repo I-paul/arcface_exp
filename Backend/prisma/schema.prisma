@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,44 +7,89 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Employee {
-  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  empId     String   @unique @map("emp_id")
-  name      String?
-  milvusId  BigInt   @unique @map("milvus_id")
-  enrolledAt DateTime @default(now()) @map("enrolled_at")
+model Room {
+  roomId          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("room_id")
+  roomName        String    @unique @map("room_name") @db.VarChar(100)
+  defaultStudents String[]  @default([]) @map("default_students")
+  createdAt       DateTime  @default(now()) @map("created_at")
 
-  attendanceEvents AttendanceEvent[]
+  camera    Camera?
+  sessions  Session[]
 
-  @@map("employees")
+  @@map("rooms")
 }
 
 model Camera {
-  camId     String   @id @db.Uuid @map("cam_id")
-  siteId    String?  @map("site_id")
-  siteName  String?  @map("site_name")
-  cameraLabel String? @map("camera_label")
-  createdAt DateTime? @map("created_at")
+  camId     String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("cam_id")
+  roomId    String   @unique @db.Uuid @map("room_id")
+  rtspUrl   String   @map("rtsp_url")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  attendanceEvents AttendanceEvent[]
+  room      Room     @relation(fields: [roomId], references: [roomId], onDelete: Cascade)
 
   @@map("cameras")
 }
 
-model AttendanceEvent {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  empId            String?  @map("emp_id")
-  camId            String?  @db.Uuid @map("cam_id")
-  siteId           String?  @map("site_id")
-  eventTime        DateTime? @map("event_time")
-  action           String?  @db.VarChar(10)
-  similarityScore  Float?   @map("similarity_score")
-  livenessPassed   Boolean? @map("liveness_passed")
-  createdAt        DateTime @default(now()) @map("created_at")
+model Student {
+  studentId   String    @id @map("student_id") @db.VarChar(20)
+  name        String    @db.VarChar(100)
+  milvusId    BigInt?   @unique @map("milvus_id")
+  enrolledAt  DateTime  @default(now()) @map("enrolled_at")
 
-  employee         Employee? @relation(fields: [empId], references: [empId], onDelete: Cascade, onUpdate: Cascade)
-  camera           Camera?   @relation(fields: [camId], references: [camId], onDelete: SetNull, onUpdate: Cascade)
+  attendanceRecords AttendanceRecord[]
 
-  @@index([empId, eventTime(sort: Desc)], name: "idx_events_emp_time")
-  @@map("attendance_events")
+  @@map("students")
+}
+
+model Period {
+  periodId   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("period_id")
+  periodName String    @map("period_name") @db.VarChar(50)
+  startTime  String    @map("start_time") @db.VarChar(5)  // "09:00"
+  endTime    String    @map("end_time")   @db.VarChar(5)  // "10:00"
+
+  sessions   Session[]
+
+  @@unique([startTime, endTime])
+  @@map("periods")
+}
+
+model Session {
+  sessionId   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid @map("session_id")
+  periodId    String    @db.Uuid @map("period_id")
+  roomId      String    @db.Uuid @map("room_id")
+  sessionDate String    @map("session_date") @db.VarChar(10)  // "2026-09-21"
+  status      String    @default("SCHEDULED") @db.VarChar(20) // SCHEDULED|ACTIVE|COMPLETED|CANCELLED
+  bookedBy    String?   @map("booked_by") @db.VarChar(100)
+  actualStart DateTime? @map("actual_start")
+  actualEnd   DateTime? @map("actual_end")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  period               Period             @relation(fields: [periodId], references: [periodId])
+  room                 Room               @relation(fields: [roomId], references: [roomId])
+  attendanceRecords    AttendanceRecord[]
+
+  @@unique([periodId, roomId, sessionDate])
+  @@index([status, sessionDate], name: "idx_sessions_status_date")
+  @@map("sessions")
+}
+
+model AttendanceRecord {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId       String    @db.Uuid @map("session_id")
+  studentId       String    @map("student_id") @db.VarChar(20)
+  status          String    @default("ABSENT") @db.VarChar(10) // PRESENT|ABSENT
+  detectedAt      DateTime? @map("detected_at")
+  similarityScore Float?    @map("similarity_score")
+  manuallyMarked  Boolean   @default(false) @map("manually_marked")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  session  Session @relation(fields: [sessionId], references: [sessionId], onDelete: Cascade)
+  student  Student @relation(fields: [studentId], references: [studentId])
+
+  @@unique([sessionId, studentId])
+  @@index([sessionId], name: "idx_records_session")
+  @@index([studentId, sessionId], name: "idx_records_student_session")
+  @@map("attendance_records")
 }

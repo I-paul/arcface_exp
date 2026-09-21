@@ -5,8 +5,11 @@ const dotenv = require('dotenv');
 const http = require('http');
 const { Server } = require('socket.io');
 dotenv.config();
-const employeeRoutes = require('./routes/employeeRoutes');
+
 const socketHandler = require('./utils/socketHandler');
+const CameraStreamManager = require('./utils/CameraStreamManager');
+const { startStreamReader } = require('./streamReader');
+const sessionCache = require('./utils/sessionCache');
 
 const app = express();
 const server = http.createServer(app);
@@ -49,7 +52,7 @@ app.get('/health', (req, res) => {
 });
 
 //routes
-app.use('/api', employeeRoutes);
+app.use('/api', require('./routes/index'));
 
 // Socket.IO connection handler
 socketHandler(io);
@@ -59,9 +62,41 @@ io.engine.on('connection_error', (err) => {
   console.error('[Socket.IO] Connection error:', err.message);
 });
 
+// Start session cache auto-refresh (polls DB every 30s for active sessions)
+sessionCache.startAutoRefresh(30000);
+
+// Start Redis stream reader + camera stream manager
+const cameraStreamManager = new CameraStreamManager(io);
+startStreamReader(io, cameraStreamManager).catch((err) => {
+  console.error('[StreamReader] Fatal:', err.message);
+  process.exit(1);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('[Server] SIGTERM received, shutting down gracefully...');
+  cameraStreamManager.closeAll();
+  server.close(() => {
+    console.log('[Server] Shutdown complete');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  console.log('[Server] SIGINT received, shutting down gracefully...');
+  cameraStreamManager.closeAll();
+  server.close(() => {
+    console.log('[Server] Shutdown complete');
+    process.exit(0);
+  });
+});
+
 //connection
 server.listen(port, () => {
   console.log(`[Server] Running on http://localhost:${port}`);
   console.log(`[Socket.IO] Ready for connections`);
+  console.log(`[CameraStreamManager] Initialized`);
+  console.log(`[SessionCache] Auto-refresh active`);
+  console.log(`[StreamReader] Reading from Redis stream`);
   console.log(`[Server] Allowed origins:`, allowedOrigins.join(', '));
 });
