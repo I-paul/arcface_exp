@@ -1,28 +1,16 @@
-# Camera ingestor configuration
-# Define one or more cameras with their RTSP URL, cam_id and site_id.
+# Camera ingestor configuration (TEMPLATE)
+# This file is not read at runtime — cameras are loaded from the database.
+# Kept as a reference for the config format.
 
 cameras:
   - cam_id: cam-1
     site_id: site-A
-    rtsp: "rtsp://user:pass@192.168.1.100:554/stream"
-    sample_interval_s: 2        # fixed sampling every N seconds
+    rtsp: "rtsp://<user>:<pass>@<camera-ip>:554/stream"
+    sample_interval_s: 2
 
-
-  - cam_id: cam-2
-    site_id: site-A
-    rtsp: "rtsp://user:pass@192.168.1.101:554/stream"
-    sample_interval_s: 5
-
-
-# Redis connection settings
+# Redis connection settings (overridden by environment variables at runtime)
 redis:
   host: "localhost"
   port: 6379
   stream_key: "camera_ingestor:stream"
   heartbeat_ttl_s: 60
-
-# Motion detection parameters
-motion:
-  history: 500
-  varThreshold: 16
-  detectShadows: false

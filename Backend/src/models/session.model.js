@@ -109,7 +109,7 @@ const getTodaySessions = async (req, res) => {
       SELECT
         s.session_id, s.status, s.booked_by, s.actual_start, s.actual_end,
         p.period_name, p.start_time, p.end_time,
-        r.room_name,
+        r.room_id, r.room_name,
         COUNT(ar.id) as total_students,
         COUNT(CASE WHEN ar.status = 'PRESENT' THEN 1 END) as present_count
       FROM sessions s
@@ -117,7 +117,7 @@ const getTodaySessions = async (req, res) => {
       JOIN rooms r ON s.room_id = r.room_id
       LEFT JOIN attendance_records ar ON s.session_id = ar.session_id
       WHERE s.session_date = CURRENT_DATE::text
-      GROUP BY s.session_id, p.period_name, p.start_time, p.end_time, r.room_name, s.status, s.booked_by, s.actual_start, s.actual_end
+      GROUP BY s.session_id, p.period_name, p.start_time, p.end_time, r.room_id, r.room_name, s.status, s.booked_by, s.actual_start, s.actual_end
       ORDER BY p.start_time
     `);
 

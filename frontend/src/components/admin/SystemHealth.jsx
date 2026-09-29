@@ -67,7 +67,9 @@ export default function SystemHealth() {
                 <span className={`font-medium ${value === true ? 'text-green-400' : value === false ? 'text-red-400' : 'text-slate-300'}`}>
                   {typeof value === 'boolean'
                     ? (value ? 'YES' : 'NO')
-                    : String(value)}
+                    : typeof value === 'object' && value !== null
+                      ? JSON.stringify(value)
+                      : String(value ?? '—')}
                 </span>
               </div>
             ))}
@@ -156,13 +158,13 @@ export default function SystemHealth() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6">
         <ServiceStatus
           name="PostgreSQL"
-          status={health?.services?.postgres}
+          status={typeof health?.services?.postgres === 'object' ? health?.services?.postgres?.status : health?.services?.postgres}
           icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" /></svg>}
         />
 
         <ServiceStatus
           name="Redis Node"
-          status={health?.services?.redis}
+          status={typeof health?.services?.redis === 'object' ? health?.services?.redis?.status : health?.services?.redis}
           icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" /></svg>}
         />
 

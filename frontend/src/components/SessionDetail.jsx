@@ -3,16 +3,19 @@ import { useParams, useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import Badge from './ui/Badge';
 import StatCard from './ui/StatCard';
+import { useToast } from './ui/Toast';
 
 export default function SessionDetail({ socket }) {
   const { session_id } = useParams();
   const navigate = useNavigate();
+  const toast = useToast();
 
   const [session, setSession] = useState(null);
   const [roster, setRoster] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [updatingStudent, setUpdatingStudent] = useState(null);
+  const [rosterSearch, setRosterSearch] = useState('');
 
   const fetchSessionData = async () => {
     try {
@@ -32,6 +35,13 @@ export default function SessionDetail({ socket }) {
   useEffect(() => {
     fetchSessionData();
   }, [session_id]);
+
+  // Subscribe to session room for real-time attendance updates
+  useEffect(() => {
+    if (!socket || !session || session.status !== 'ACTIVE') return;
+    socket.emit('watch-session', session_id);
+    return () => socket.emit('watch-session', null);
+  }, [socket, session, session_id]);
 
   // Real-time attendance updates for active sessions
   useEffect(() => {
@@ -68,7 +78,7 @@ export default function SessionDetail({ socket }) {
       ));
     } catch (err) {
       console.error('Failed to update attendance:', err);
-      alert(err.response?.data?.error || 'Failed to update attendance');
+      toast.error(err.response?.data?.error || 'Failed to update attendance');
     } finally {
       setUpdatingStudent(null);
     }
@@ -99,8 +109,15 @@ export default function SessionDetail({ socket }) {
   const totalCount = roster.length;
   const attendancePercent = totalCount > 0 ? Math.round((presentCount / totalCount) * 100) : 0;
 
+  const filteredRoster = rosterSearch
+    ? roster.filter(r =>
+        r.name.toLowerCase().includes(rosterSearch.toLowerCase()) ||
+        r.student_id.includes(rosterSearch)
+      )
+    : roster;
+
   // Sort: PRESENT first, then ABSENT
-  const sortedRoster = [...roster].sort((a, b) => {
+  const sortedRoster = [...filteredRoster].sort((a, b) => {
     if (a.status === 'PRESENT' && b.status !== 'PRESENT') return -1;
     if (a.status !== 'PRESENT' && b.status === 'PRESENT') return 1;
     return a.name.localeCompare(b.name);
@@ -126,7 +143,7 @@ export default function SessionDetail({ socket }) {
           <div className="flex items-start justify-between">
             <div>
               <h1 className="text-2xl font-semibold text-slate-100 mb-2">{session.period_name}</h1>
-              <div className="flex items-center space-x-6 text-sm text-slate-400 font-medium">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-slate-400 font-medium">
                 <div className="flex items-center">
                   <svg className="w-4 h-4 mr-2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
@@ -175,16 +192,30 @@ export default function SessionDetail({ socket }) {
 
       {/* Roster Table */}
       <div className="bg-surface border border-subtle rounded-xl overflow-hidden shadow-lg">
-        <div className="px-6 py-4 border-b border-subtle bg-raised flex items-center justify-between">
+        <div className="px-4 lg:px-6 py-4 border-b border-subtle bg-raised flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-widest">Attendance Roster</h2>
-          
-          <div className="flex items-center space-x-2 text-xs font-mono text-slate-400">
-            <span>{attendancePercent}% RATE</span>
-            <div className="w-24 h-1.5 bg-subtle rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-blue-500 transition-all duration-500" 
-                style={{ width: `${attendancePercent}%` }} 
+
+          <div className="flex items-center space-x-4">
+            <div className="relative">
+              <svg className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              <input
+                type="text"
+                placeholder="Search roster..."
+                value={rosterSearch}
+                onChange={(e) => setRosterSearch(e.target.value)}
+                className="w-44 bg-base border border-subtle text-slate-200 text-xs rounded pl-8 pr-3 py-1.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/50 outline-none"
               />
+            </div>
+            <div className="flex items-center space-x-2 text-xs font-mono text-slate-400">
+              <span>{attendancePercent}% RATE</span>
+              <div className="w-24 h-1.5 bg-subtle rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-blue-500 transition-all duration-500"
+                  style={{ width: `${attendancePercent}%` }}
+                />
+              </div>
             </div>
           </div>
         </div>

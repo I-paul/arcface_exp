@@ -135,8 +135,8 @@ class CameraStreamManager {
       }
     }));
 
-    // Emit to frontend for canvas overlay (no imageBase64 — already sent via camera-frame)
-    this.io.emit('face-recognition-result', {
+    // Emit to clients watching this camera for canvas overlay
+    this.io.to(`cam:${cam_id}`).emit('face-recognition-result', {
       cam_id,
       frame_id,
       faces: resolvedFaces
@@ -168,8 +168,7 @@ class CameraStreamManager {
         `, [face.confidence, session_id, face.student_id]);
 
         if (result.rowCount > 0) {
-          // Emit real-time attendance update so live roster updates
-          this.io.emit('session-attendance-update', {
+          this.io.to(`session:${session_id}`).emit('session-attendance-update', {
             session_id,
             student_id: face.student_id,
             name: face.name,

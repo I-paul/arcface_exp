@@ -118,7 +118,6 @@ services:
     env_file:
       - .env
     volumes:
-      - ./ml_service:/app
       - ml_service_data:/app/data
     depends_on:
       milvus:
@@ -139,9 +138,6 @@ services:
     env_file:
       - .env
     command: sh -c "npm run migrate && npm start"
-    volumes:
-      - ./Backend:/app
-      - backend_node_modules:/app/node_modules
     depends_on:
       milvus:
         condition: service_healthy
@@ -194,6 +190,8 @@ services:
       - REDIS_PORT=6379
       - STREAM_KEY=camera_ingestor:stream
       - HEARTBEAT_TTL_S=60
+      - SAMPLE_INTERVAL_S=0.3
+      - JPEG_QUALITY=70
       - BACKEND_URL=http://backend:3000
       - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
     depends_on:
@@ -216,5 +214,4 @@ volumes:
   milvus_data:
   postgres_data:
   redis_data:
-  backend_node_modules:
   frontend_node_modules:

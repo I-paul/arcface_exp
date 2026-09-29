@@ -3,11 +3,13 @@ import axios from 'axios';
 import ConfirmAction from '../ui/ConfirmAction';
 import EmptyState from '../ui/EmptyState';
 import Badge from '../ui/Badge';
+import { useToast } from '../ui/Toast';
 
 export default function AdminStudents() {
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const toast = useToast();
 
   const fetchStudents = async () => {
     try {
@@ -28,10 +30,11 @@ export default function AdminStudents() {
   const handleDelete = async (studentId) => {
     try {
       await axios.delete(`/api/students/${studentId}`);
+      toast.success('Student deleted');
       fetchStudents();
     } catch (err) {
       console.error('Failed to delete student:', err);
-      alert(err.response?.data?.error || 'Failed to delete student');
+      toast.error(err.response?.data?.error || 'Failed to delete student');
     }
   };
 

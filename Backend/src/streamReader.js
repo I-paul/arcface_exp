@@ -73,8 +73,8 @@ async function startStreamReader(io, cameraStreamManager) {
 
           const frameId = ++frameCounter;
 
-          // PATH 1 — Display: emit frame immediately to all frontend clients
-          io.emit('camera-frame', {
+          // PATH 1 — Display: emit frame to clients watching this camera
+          io.to(`cam:${cam_id}`).emit('camera-frame', {
             cam_id,
             frame_id: frameId,
             imageBase64,

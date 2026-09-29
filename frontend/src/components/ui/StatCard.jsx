@@ -12,7 +12,7 @@ export default function StatCard({ label, value, sub, color = 'blue' }) {
   const textClass = colorMap[color] || colorMap.default;
 
   return (
-    <div className="bg-raised rounded-xl p-4 flex flex-col justify-center">
+    <div className="bg-raised border border-subtle rounded-xl p-4 flex flex-col justify-center">
       <div className="text-xs font-medium uppercase tracking-widest text-slate-500 mb-1">
         {label}
       </div>

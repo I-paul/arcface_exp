@@ -171,22 +171,31 @@ export default function EnrollmentPage() {
     <div className="max-w-2xl mx-auto space-y-6">
       <div className="mb-6">
         <h1 className="text-2xl font-semibold text-slate-100">Student Enrollment</h1>
-        <p className="text-sm text-slate-400 mt-1">Enroll students for facial recognition monitoring</p>
+        <p className="text-sm text-slate-400 mt-1">Register students for facial recognition attendance</p>
       </div>
 
       {/* Progress Bar */}
       <div className="flex items-center space-x-4 mb-8">
-        {[1, 2, 3].map(s => (
-          <React.Fragment key={s}>
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold border-2 transition-colors ${
-              step >= s 
-                ? 'bg-blue-600 border-blue-600 text-white shadow-[0_0_10px_rgba(37,99,235,0.5)]' 
-                : 'bg-surface border-subtle text-slate-500'
-            }`}>
-              {s}
+        {[{ n: 1, label: 'Student' }, { n: 2, label: 'Photos' }, { n: 3, label: 'Done' }].map(({ n, label }) => (
+          <React.Fragment key={n}>
+            <div className="flex flex-col items-center space-y-1">
+              <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-semibold border-2 transition-colors ${
+                step >= n
+                  ? 'bg-blue-600 border-blue-600 text-white shadow-[0_0_10px_rgba(37,99,235,0.5)]'
+                  : 'bg-surface border-subtle text-slate-500'
+              }`}>
+                {step > n ? (
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                  </svg>
+                ) : n}
+              </div>
+              <span className={`text-[10px] font-medium uppercase tracking-wider ${step >= n ? 'text-blue-400' : 'text-slate-500'}`}>
+                {label}
+              </span>
             </div>
-            {s < 3 && (
-              <div className={`flex-1 h-0.5 rounded-full ${step > s ? 'bg-blue-600' : 'bg-subtle'}`} />
+            {n < 3 && (
+              <div className={`flex-1 h-0.5 rounded-full mb-5 ${step > n ? 'bg-blue-600' : 'bg-subtle'}`} />
             )}
           </React.Fragment>
         ))}
@@ -419,7 +428,7 @@ export default function EnrollmentPage() {
               disabled={capturedImages.length < 3 || loading}
               className="px-6 py-2.5 text-sm font-medium bg-green-600 text-white rounded-lg hover:bg-green-500 transition-colors shadow-lg shadow-green-900/20 disabled:bg-slate-700 disabled:text-slate-500 disabled:shadow-none disabled:cursor-not-allowed"
             >
-              {loading ? 'Processing...' : `Enroll Subject (${capturedImages.length})`}
+              {loading ? 'Processing...' : `Enroll Student (${capturedImages.length})`}
             </button>
           </div>
 
@@ -436,9 +445,9 @@ export default function EnrollmentPage() {
             </svg>
           </div>
 
-          <h2 className="text-2xl font-bold text-slate-100 mb-2">Subject Enrolled</h2>
+          <h2 className="text-2xl font-bold text-slate-100 mb-2">Student Enrolled</h2>
           <p className="text-slate-400 mb-8">
-            <span className="text-slate-200 font-medium">{enrolledStudent.name}</span> has been successfully registered to the vector database.
+            <span className="text-slate-200 font-medium">{enrolledStudent.name}</span> has been successfully enrolled for face recognition.
           </p>
 
           <div className="max-w-xs mx-auto bg-raised border border-subtle rounded-lg p-5 mb-8 text-left space-y-3">
@@ -460,7 +469,7 @@ export default function EnrollmentPage() {
             onClick={resetForm}
             className="px-6 py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition-colors shadow-lg shadow-blue-900/20"
           >
-            Enroll Next Subject
+            Enroll Another Student
           </button>
         </div>
       )}

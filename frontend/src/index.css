@@ -39,3 +39,16 @@ body {
     opacity: 1;
   }
 }
+
+.slide-in-bottom {
+  animation: slide-in-bottom 0.2s ease-out;
+}
+
+/* Hide scrollbar utility */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}

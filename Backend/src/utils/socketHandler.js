@@ -158,6 +158,34 @@ module.exports = function socketHandler(io) {
     });
 
     /**
+     * Camera room subscription — clients join a room to receive only
+     * frames and recognition results for the camera they're watching.
+     */
+    socket.on('watch-camera', (cam_id) => {
+      // Leave all previous camera rooms
+      for (const room of socket.rooms) {
+        if (room.startsWith('cam:')) socket.leave(room);
+      }
+      if (cam_id) {
+        socket.join(`cam:${cam_id}`);
+        console.log(`[Socket.IO] ${socket.id} watching cam:${cam_id}`);
+      }
+    });
+
+    /**
+     * Session room subscription — clients join to receive live attendance updates.
+     */
+    socket.on('watch-session', (session_id) => {
+      for (const room of socket.rooms) {
+        if (room.startsWith('session:')) socket.leave(room);
+      }
+      if (session_id) {
+        socket.join(`session:${session_id}`);
+        console.log(`[Socket.IO] ${socket.id} watching session:${session_id}`);
+      }
+    });
+
+    /**
      * Health check for ML service
      */
     socket.on('check-ml-service', async () => {

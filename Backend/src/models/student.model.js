@@ -166,16 +166,6 @@ const enrollStudent = async (req, res) => {
     form.append('emp_id', student_id); // ML service uses emp_id field
 
     req.files.forEach((file) => {
-      try {
-        const buffer = fs.readFileSync(file.path);
-        console.log(`[DEBUG] File ${file.originalname} size: ${buffer.length}`);
-        if (buffer.length === 937 || buffer.length < 2000) {
-          console.log(`[DEBUG] First 100 bytes of ${file.originalname}: ${buffer.slice(0, 100).toString('utf8')}`);
-          console.log(`[DEBUG] Hex of first 20 bytes: ${buffer.slice(0, 20).toString('hex')}`);
-        }
-      } catch (err) {
-        console.error('Debug read error:', err);
-      }
       form.append('files', fs.createReadStream(file.path), file.originalname);
     });
 

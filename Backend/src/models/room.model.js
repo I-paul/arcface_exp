@@ -87,6 +87,14 @@ const deleteRoom = async (req, res) => {
   try {
     const { room_id } = req.params;
 
+    const { rows: sessionCheck } = await pool.query(
+      'SELECT COUNT(*) as count FROM sessions WHERE room_id = $1',
+      [room_id]
+    );
+    if (parseInt(sessionCheck[0].count) > 0) {
+      return res.status(409).json({ message: 'Cannot delete room with existing sessions' });
+    }
+
     const result = await pool.query(
       'DELETE FROM rooms WHERE room_id = $1',
       [room_id]

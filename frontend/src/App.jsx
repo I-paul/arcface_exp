@@ -3,8 +3,9 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
 import axios from 'axios';
 
-// Layout
+// Layout & Providers
 import AppLayout from './components/layout/AppLayout';
+import { ToastProvider } from './components/ui/Toast';
 
 // Main Components
 import ClassroomMonitor from './components/ClassroomMonitor';
@@ -35,6 +36,7 @@ function App() {
   }, []);
 
   return (
+    <ToastProvider>
     <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <Routes>
         {/* Default redirect to monitor */}
@@ -81,6 +83,7 @@ function App() {
         <Route path="*" element={<Navigate to="/monitor" replace />} />
       </Routes>
     </BrowserRouter>
+    </ToastProvider>
   );
 }
 

@@ -25,22 +25,24 @@ import psycopg2
 STOP_EVENT = threading.Event()
 
 
+JPEG_QUALITY = int(os.getenv('JPEG_QUALITY', '70'))
+
+
 def encode_jpeg_base64(frame):
-    # Encode an image (BGR) as JPEG and return base64 string (without data header)
-    ret, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+    ret, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
     if not ret:
         raise ValueError('Failed to encode frame as JPEG')
-    b = buf.tobytes()
-    return base64.b64encode(b).decode('ascii')
+    return base64.b64encode(buf.tobytes()).decode('ascii')
 
 
 class CameraWorker(threading.Thread):
-    def __init__(self, cam_cfg, redis_client, stream_key, heartbeat_ttl):
+    def __init__(self, cam_cfg, redis_client, stream_key, heartbeat_ttl, stop_event=None):
         super().__init__(daemon=True)
         self.cam_cfg = cam_cfg
         self.redis = redis_client
         self.stream_key = stream_key
         self.heartbeat_ttl = heartbeat_ttl
+        self.stop_event = stop_event or threading.Event()
         self.backSub = None
         # Motion detection disabled: using fixed-interval sampling only.
         # To re-enable motion detection, uncomment and adjust the block below.
@@ -51,53 +53,51 @@ class CameraWorker(threading.Thread):
         #         detectShadows=cam_cfg.get('motion_detectShadows', False)
         #     )
 
+    def _should_stop(self):
+        return STOP_EVENT.is_set() or self.stop_event.is_set()
+
+    def stop(self):
+        self.stop_event.set()
+
     def run(self):
         cam_id = self.cam_cfg['cam_id']
         rtsp = self.cam_cfg['rtsp']
-        sample_interval = float(self.cam_cfg.get('sample_interval_s', 2))
+        sample_interval = float(self.cam_cfg.get('sample_interval_s',
+                                                   os.getenv('SAMPLE_INTERVAL_S', '0.3')))
         min_motion_frames = int(self.cam_cfg.get('min_motion_frames', 1))
 
-        while not STOP_EVENT.is_set():
+        while not self._should_stop():
             cap = None
             try:
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
+                    'rtsp_transport;tcp|analyzeduration;0|fflags;nobuffer'
+                    '|flags;low_delay|max_delay;0|probesize;32'
+                )
                 cap = cv2.VideoCapture(rtsp, cv2.CAP_FFMPEG)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 if not cap.isOpened():
                     print(f"[ingestor:{cam_id}] Failed to open stream, retrying in 5s")
                     time.sleep(5)
                     continue
 
-                print(f"[ingestor:{cam_id}] Stream opened: {rtsp}")
+                print(f"[ingestor:{cam_id}] Stream opened (low-latency): {rtsp}")
 
                 last_sample_time = 0
-                motion_count = 0
 
-                while not STOP_EVENT.is_set():
-                    ret, frame = cap.read()
-                    if not ret or frame is None:
-                        print(f"[ingestor:{cam_id}] Frame read failed, reconnecting")
+                while not self._should_stop():
+                    # grab() is fast (no decode) — keeps the buffer drained
+                    if not cap.grab():
+                        print(f"[ingestor:{cam_id}] Frame grab failed, reconnecting")
                         break
 
                     now = time.time()
-
-                    # Motion detection disabled — use interval-only sampling
-                    motion_detected = True
-                    # If you want motion gating later, re-enable and tune the block below.
-                    # if self.backSub is not None:
-                    #     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    #     fgmask = self.backSub.apply(gray)
-                    #     # count non-zero pixels in fgmask
-                    #     nz = int(np.count_nonzero(fgmask))
-                    #     if nz > 500:  # heuristic threshold
-                    #         motion_count += 1
-                    #     else:
-                    #         motion_count = 0
-                    #     motion_detected = motion_count >= min_motion_frames
-
-                    # Sampling decision
                     time_ok = (now - last_sample_time) >= sample_interval
 
-                    if (self.backSub is None and time_ok) or (self.backSub is not None and motion_detected and time_ok):
-                        # prepare payload
+                    if time_ok:
+                        # retrieve() decodes only when we need the frame
+                        ret, frame = cap.retrieve()
+                        if not ret or frame is None:
+                            continue
                         try:
                             image_b64 = encode_jpeg_base64(frame)
                             payload = {
@@ -151,6 +151,7 @@ def fetch_active_cameras_from_db(database_url, timeout=10):
             FROM cameras c
             JOIN rooms r ON c.room_id = r.room_id
             WHERE c.is_active = TRUE
+              AND c.rtsp_url NOT LIKE 'rtsp://CONFIGURE%%'
             ORDER BY r.room_name
         """)
 
@@ -165,7 +166,7 @@ def fetch_active_cameras_from_db(database_url, timeout=10):
             camera_configs.append({
                 'cam_id': str(cam_id),
                 'rtsp': rtsp_url,
-                'sample_interval_s': 2,  # Default 2 seconds
+                'sample_interval_s': float(os.getenv('SAMPLE_INTERVAL_S', '0.3')),
             })
 
         return camera_configs
@@ -195,7 +196,7 @@ def fetch_active_cameras_from_api(backend_url, timeout=10):
                 camera_configs.append({
                     'cam_id': cam['cam_id'],
                     'rtsp': cam['rtsp_url'],
-                    'sample_interval_s': 2,  # Default 2 seconds
+                    'sample_interval_s': float(os.getenv('SAMPLE_INTERVAL_S', '0.3')),
                 })
 
         return camera_configs
@@ -240,11 +241,11 @@ def main():
 
     print(f"[ingestor] Found {len(cameras)} active camera(s)")
 
-    workers = []
+    workers = {}
     for cam in cameras:
         w = CameraWorker(cam, r, stream_key, heartbeat_ttl)
         w.start()
-        workers.append(w)
+        workers[cam['cam_id']] = w
 
     def handle_sig(signum, frame):
         print('Shutting down...')
@@ -253,13 +254,48 @@ def main():
     signal.signal(signal.SIGINT, handle_sig)
     signal.signal(signal.SIGTERM, handle_sig)
 
+    CAMERA_REFRESH_S = 60
+
     try:
+        last_refresh = time.time()
         while not STOP_EVENT.is_set():
             time.sleep(1)
+            if time.time() - last_refresh >= CAMERA_REFRESH_S and database_url:
+                last_refresh = time.time()
+                try:
+                    live = fetch_active_cameras_from_db(database_url)
+                    live_by_id = {cam['cam_id']: cam for cam in live}
+                    live_ids = set(live_by_id.keys())
+
+                    for cam_id, cam in live_by_id.items():
+                        existing = workers.get(cam_id)
+                        if existing and existing.is_alive():
+                            if existing.cam_cfg['rtsp'] != cam['rtsp']:
+                                print(f"[ingestor] RTSP URL changed for cam {cam_id}, restarting worker")
+                                existing.stop()
+                                existing.join(timeout=5)
+                                w = CameraWorker(cam, r, stream_key, heartbeat_ttl)
+                                w.start()
+                                workers[cam_id] = w
+                        else:
+                            w = CameraWorker(cam, r, stream_key, heartbeat_ttl)
+                            w.start()
+                            workers[cam_id] = w
+                            print(f"[ingestor] Started new worker for cam {cam_id}")
+
+                    stale_ids = set(workers.keys()) - live_ids
+                    for cam_id in stale_ids:
+                        print(f"[ingestor] Camera {cam_id} no longer active, stopping worker")
+                        workers[cam_id].stop()
+                        workers[cam_id].join(timeout=5)
+                        del workers[cam_id]
+
+                except Exception as e:
+                    print(f"[ingestor] Camera refresh error: {e}")
     except KeyboardInterrupt:
         STOP_EVENT.set()
 
-    for w in workers:
+    for w in workers.values():
         w.join(timeout=5)
 
 

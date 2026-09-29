@@ -3,6 +3,7 @@ import axios from 'axios';
 import ConfirmAction from '../ui/ConfirmAction';
 import EmptyState from '../ui/EmptyState';
 import Badge from '../ui/Badge';
+import { useToast } from '../ui/Toast';
 
 export default function AdminRooms() {
   const [rooms, setRooms] = useState([]);
@@ -13,6 +14,7 @@ export default function AdminRooms() {
   const [formData, setFormData] = useState({ room_name: '', default_students: [] });
   const [editingRoom, setEditingRoom] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const toast = useToast();
 
   const fetchData = async () => {
     try {
@@ -41,8 +43,10 @@ export default function AdminRooms() {
     try {
       if (editingRoom) {
         await axios.put(`/api/rooms/${editingRoom.room_id}`, formData);
+        toast.success('Room updated');
       } else {
         await axios.post('/api/rooms', formData);
+        toast.success('Room created');
       }
 
       setShowForm(false);
@@ -51,7 +55,7 @@ export default function AdminRooms() {
       fetchData();
     } catch (err) {
       console.error('Failed to save room:', err);
-      alert(err.response?.data?.error || 'Failed to save room');
+      toast.error(err.response?.data?.error || err.response?.data?.message || 'Failed to save room');
     }
   };
 
@@ -65,10 +69,11 @@ export default function AdminRooms() {
   const handleDelete = async (roomId) => {
     try {
       await axios.delete(`/api/rooms/${roomId}`);
+      toast.success('Room deleted');
       fetchData();
     } catch (err) {
       console.error('Failed to delete room:', err);
-      alert(err.response?.data?.error || 'Failed to delete room');
+      toast.error(err.response?.data?.error || err.response?.data?.message || 'Failed to delete room');
     }
   };
 

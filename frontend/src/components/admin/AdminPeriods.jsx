@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import ConfirmAction from '../ui/ConfirmAction';
 import EmptyState from '../ui/EmptyState';
+import { useToast } from '../ui/Toast';
 
 export default function AdminPeriods() {
   const [periods, setPeriods] = useState([]);
@@ -13,6 +14,7 @@ export default function AdminPeriods() {
     end_time: ''
   });
   const [editingPeriod, setEditingPeriod] = useState(null);
+  const toast = useToast();
 
   const fetchPeriods = async () => {
     try {
@@ -36,8 +38,10 @@ export default function AdminPeriods() {
     try {
       if (editingPeriod) {
         await axios.put(`/api/periods/${editingPeriod.period_id}`, formData);
+        toast.success('Period updated');
       } else {
         await axios.post('/api/periods', formData);
+        toast.success('Period created');
       }
 
       setShowForm(false);
@@ -46,7 +50,7 @@ export default function AdminPeriods() {
       fetchPeriods();
     } catch (err) {
       console.error('Failed to save period:', err);
-      alert(err.response?.data?.error || 'Failed to save period');
+      toast.error(err.response?.data?.error || 'Failed to save period');
     }
   };
 
@@ -63,10 +67,11 @@ export default function AdminPeriods() {
   const handleDelete = async (periodId) => {
     try {
       await axios.delete(`/api/periods/${periodId}`);
+      toast.success('Period deleted');
       fetchPeriods();
     } catch (err) {
       console.error('Failed to delete period:', err);
-      alert(err.response?.data?.error || 'Failed to delete period. It may be referenced by sessions.');
+      toast.error(err.response?.data?.error || 'Failed to delete period. It may be referenced by sessions.');
     }
   };
 
@@ -111,45 +116,53 @@ export default function AdminPeriods() {
           <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-widest mb-4">
             {editingPeriod ? 'Edit Period' : 'Add New Period'}
           </h3>
-          <form onSubmit={handleSubmit} className="flex items-end space-x-4">
-            <div className="flex-1">
-              <label className={labelClass}>Period Name</label>
-              <input
-                type="text"
-                value={formData.period_name}
-                onChange={(e) => setFormData({ ...formData, period_name: e.target.value })}
-                required
-                placeholder="e.g. Period 1"
-                autoFocus
-                className={inputClass}
-              />
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div>
+                <label className={labelClass}>Period Name</label>
+                <input
+                  type="text"
+                  value={formData.period_name}
+                  onChange={(e) => setFormData({ ...formData, period_name: e.target.value })}
+                  required
+                  placeholder="e.g. Period 1"
+                  autoFocus
+                  className={inputClass}
+                />
+              </div>
+
+              <div>
+                <label className={labelClass}>Start Time</label>
+                <input
+                  type="time"
+                  value={formData.start_time}
+                  onChange={(e) => setFormData({ ...formData, start_time: e.target.value })}
+                  required
+                  className={inputClass}
+                  style={{ colorScheme: 'dark' }}
+                />
+              </div>
+
+              <div>
+                <label className={labelClass}>End Time</label>
+                <input
+                  type="time"
+                  value={formData.end_time}
+                  onChange={(e) => setFormData({ ...formData, end_time: e.target.value })}
+                  required
+                  className={inputClass}
+                  style={{ colorScheme: 'dark' }}
+                />
+              </div>
             </div>
 
-            <div>
-              <label className={labelClass}>Start Time</label>
-              <input
-                type="time"
-                value={formData.start_time}
-                onChange={(e) => setFormData({ ...formData, start_time: e.target.value })}
-                required
-                className={inputClass}
-                style={{ colorScheme: 'dark' }}
-              />
-            </div>
-
-            <div>
-              <label className={labelClass}>End Time</label>
-              <input
-                type="time"
-                value={formData.end_time}
-                onChange={(e) => setFormData({ ...formData, end_time: e.target.value })}
-                required
-                className={inputClass}
-                style={{ colorScheme: 'dark' }}
-              />
-            </div>
-
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2 pt-2">
+              <button
+                type="submit"
+                className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                {editingPeriod ? 'Update' : 'Create'}
+              </button>
               <button
                 type="button"
                 onClick={() => {
@@ -160,12 +173,6 @@ export default function AdminPeriods() {
                 className="px-4 py-2 text-sm font-medium text-slate-300 bg-surface border border-subtle rounded-lg hover:bg-subtle hover:text-white transition-colors"
               >
                 Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-              >
-                {editingPeriod ? 'Update' : 'Create'}
               </button>
             </div>
           </form>

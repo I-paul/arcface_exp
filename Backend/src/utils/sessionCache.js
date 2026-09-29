@@ -19,6 +19,7 @@ async function refresh() {
 
     const newCache = new Map();
     for (const row of rows) {
+      if (!row.actual_start) continue;
       newCache.set(row.cam_id, {
         session_id: row.session_id,
         actual_start: new Date(row.actual_start),

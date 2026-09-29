@@ -3,6 +3,7 @@ import axios from 'axios';
 import ConfirmAction from '../ui/ConfirmAction';
 import EmptyState from '../ui/EmptyState';
 import Badge from '../ui/Badge';
+import { useToast } from '../ui/Toast';
 
 export default function AdminCameras() {
   const [cameras, setCameras] = useState([]);
@@ -15,6 +16,7 @@ export default function AdminCameras() {
     is_active: true
   });
   const [editingCamera, setEditingCamera] = useState(null);
+  const toast = useToast();
 
   const fetchData = async () => {
     try {
@@ -45,8 +47,10 @@ export default function AdminCameras() {
           rtsp_url: formData.rtsp_url,
           is_active: formData.is_active
         });
+        toast.success('Camera updated');
       } else {
         await axios.post('/api/cameras', formData);
+        toast.success('Camera added');
       }
 
       setShowForm(false);
@@ -55,7 +59,7 @@ export default function AdminCameras() {
       fetchData();
     } catch (err) {
       console.error('Failed to save camera:', err);
-      alert(err.response?.data?.error || 'Failed to save camera');
+      toast.error(err.response?.data?.error || 'Failed to save camera');
     }
   };
 
@@ -72,10 +76,11 @@ export default function AdminCameras() {
   const handleDelete = async (camId) => {
     try {
       await axios.delete(`/api/cameras/${camId}`);
+      toast.success('Camera deleted');
       fetchData();
     } catch (err) {
       console.error('Failed to delete camera:', err);
-      alert(err.response?.data?.error || 'Failed to delete camera');
+      toast.error(err.response?.data?.error || 'Failed to delete camera');
     }
   };
 
@@ -86,10 +91,11 @@ export default function AdminCameras() {
         rtsp_url: camera.rtsp_url,
         is_active: !currentStatus
       });
+      toast.success(`Camera ${!currentStatus ? 'activated' : 'deactivated'}`);
       fetchData();
     } catch (err) {
       console.error('Failed to toggle camera status:', err);
-      alert(err.response?.data?.error || 'Failed to update camera');
+      toast.error(err.response?.data?.error || 'Failed to update camera');
     }
   };
 

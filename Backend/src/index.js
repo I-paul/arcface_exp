@@ -1,6 +1,7 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -41,6 +42,12 @@ app.use(cors({
 }));
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+
+const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 100, standardHeaders: true, legacyHeaders: false });
+const enrollLimiter = rateLimit({ windowMs: 60 * 1000, max: 5, message: { error: 'Too many enrollment requests, try again in a minute' } });
+app.use('/api', apiLimiter);
+app.use('/api/enroll', enrollLimiter);
+app.use('/api/re-enroll', enrollLimiter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

@@ -7,7 +7,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "migrate": "prisma db push",
+    "migrate": "prisma migrate deploy",
     "migrate:dev": "prisma migrate dev"
   },
   "keywords": [],
@@ -25,8 +25,8 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "express-rate-limit": "^7.5.0",
     "form-data": "^4.0.0",
-    "fs": "^0.0.1-security",
     "ioredis": "^6.0.0",
     "multer": "^1.4.5-lts.1",
     "pg": "^8.16.3",
